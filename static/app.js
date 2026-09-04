@@ -174,6 +174,10 @@ async function applyMemory(fields) {
   if (known?.name) {
     const printed = aliasKey(fields.receiver_name || "");
     if (!printed || aliasKey(known.name) !== printed) {
+      // The account says who this is, so the mis-read spelling is worth keeping
+      // too: the next receipt may not show an account number at all.
+      if (fields.receiver_name && fields.receiver_name.length > 3)
+        await memory.rememberName(fields.receiver_name, known.name, "auto");
       fields.receiver_name = known.name;
       fields.receiver_name_en = known.name;
       fields.from_memory = true;
@@ -200,6 +204,11 @@ async function learnFrom(fields) {
                                               kind: key === fields.receiver_account
                                                 ? fields.receiver_account_kind : "linked" });
   }
+  // The sending account belongs to a company as well - worth knowing when that
+  // company turns up as the beneficiary on someone else's receipt.
+  const sender = fields.sender_name_en || fields.sender_name;
+  if (fields.sender_account && sender && sender.length > 3)
+    await memory.rememberAccount(fields.sender_account, sender, { side: "sender" });
 }
 
 async function scan() {
@@ -482,6 +491,7 @@ $("applyBtn").onclick = async () => {
       unique = target.replace(/\.pdf$/i, "") + `_${n++}.pdf`;
 
     try {
+      await learnFromEdit(row, edits[i]);
       await renameFile(row, unique);
       existing.delete(row.name.toLowerCase());
       existing.add(unique.toLowerCase());
@@ -505,11 +515,60 @@ $("applyBtn").onclick = async () => {
     $("undoBtn").hidden = false;
   }
   render();
+  if (learnedFromEdits) {
+    names = await memory.nameBook();
+    toast(`Learned ${learnedFromEdits} correction${learnedFromEdits === 1 ? "" : "s"} from your edits.`);
+    learnedFromEdits = 0;
+  }
+  await renderMemory();
+  await pushToTeamFile();
   toast(`Renamed ${renamed}${skipped ? ` · skipped ${skipped}` : ""}${failed ? ` · failed ${failed}` : ""}`,
         failed ? "bad" : "");
 };
 
 let lastBatch = null;
+
+/** If someone corrected the company inside the file name before renaming, that
+    is a lesson: store it against the account and the printed spelling. This is
+    what makes the app steadily better the more the office uses it.
+
+    The lesson is read by comparing the name the app generated with the name the
+    person kept, segment by segment - guessing which word is the company would
+    happily "learn" the bank's own name. */
+async function learnFromEdit(row, edited) {
+  if (!settings.autoLearn || !edited || !row.rawFields) return;
+  const o = options();
+  const generated = buildName(row.fields, o.template, row.name, o.stripLegal, o.invFromName);
+  const before = generated.replace(/\.pdf$/i, "").split("_");
+  const after = edited.trim().replace(/\.pdf$/i, "").split("_");
+  if (before.length !== after.length) return;                  // structure changed, not a rename of the party
+
+  const receiverSegment = buildName({ ...row.fields, bank_name: "", amount: "", currency: "",
+                                      invoice_number: "", reference_number: "",
+                                      transaction_date: "", sender_name: "", sender_name_en: "" },
+                                    "{receiver}", "x.pdf", o.stripLegal, false).replace(/\.pdf$/i, "");
+  if (!receiverSegment) return;
+
+  const changed = before.map((part, i) => [part, after[i]]).filter(([a, b]) => a !== b);
+  if (changed.length !== 1) return;                            // several edits: too ambiguous to learn from
+  const [wasSegment, nowSegment] = changed[0];
+  if (wasSegment !== receiverSegment || nowSegment.length < 3) return;
+
+  const spaced = nowSegment.replace(/([a-z])([A-Z])/g, "$1 $2").trim();
+  if (looksLikeABank(spaced)) return;                          // never learn a bank as the customer
+
+  const printed = row.rawFields.receiver_name;
+  if (printed) await memory.rememberName(printed, spaced, "manual");
+  const keys = row.fields.receiver_accounts?.length
+    ? row.fields.receiver_accounts : [row.fields.receiver_account];
+  for (const key of keys) if (key) await memory.rememberAccount(key, spaced, { confirmed: true });
+  learnedFromEdits++;
+}
+
+let learnedFromEdits = 0;
+
+const BANKISH = /bank|masraf|مصرف|بنك|rajhi|jazira|riyad|alinma|albilad|sabb|anb\b|snb\b/i;
+const looksLikeABank = (value) => BANKISH.test(value);
 
 async function renameFile(row, newName) {
   if (row.handle.move) return row.handle.move(newName);   // Chrome / Edge
@@ -544,6 +603,63 @@ $("undoBtn").onclick = async () => {
   toast(`Restored ${restored} original name${restored === 1 ? "" : "s"}.`);
 };
 
+/* ── the shared team file ──────────────────────────────────────── */
+
+let teamHandle = null;
+
+async function pushToTeamFile(quiet = true) {
+  if (!teamHandle) return;
+  const result = await memory.syncWithFile(teamHandle);
+  if (result?.error === "permission") {
+    if (!quiet) toast("The team file needs permission again — click Sync.", "bad");
+    return;
+  }
+  if (!quiet && result) toast(`Team file synced · ${result.pulled} new item(s) came in.`);
+  renderTeamState(result);
+}
+
+function renderTeamState(result) {
+  const row = $("teamState");
+  if (!teamHandle) { row.textContent = "No shared file yet."; return; }
+  const when = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  row.innerHTML = `Sharing with <strong class="mono">${esc(teamHandle.name)}</strong>` +
+    (result ? ` · synced ${esc(when)}` : "");
+}
+
+$("teamPick").onclick = async () => {
+  try {
+    const [handle] = await window.showOpenFilePicker({
+      id: "team-memory", multiple: false,
+      types: [{ description: "Receipt Renamer memory", accept: { "application/json": [".json"] } }],
+    });
+    teamHandle = handle;
+  } catch { return; }
+  await memory.setSyncHandle(teamHandle);
+  await pushToTeamFile(false);
+  names = await memory.nameBook();
+  renderMemory();
+  render();
+};
+
+$("teamCreate").onclick = async () => {
+  try {
+    teamHandle = await window.showSaveFilePicker({
+      id: "team-memory", suggestedName: "receipt-renamer-memory.json",
+      types: [{ description: "Receipt Renamer memory", accept: { "application/json": [".json"] } }],
+    });
+  } catch { return; }
+  await memory.setSyncHandle(teamHandle);
+  await pushToTeamFile(false);
+};
+
+$("teamSync").onclick = () => pushToTeamFile(false);
+$("teamForget").onclick = async () => {
+  teamHandle = null;
+  await memory.clearSyncHandle();
+  renderTeamState();
+  toast("Stopped using the shared file.");
+};
+
 /* ── memory panels ─────────────────────────────────────────────── */
 
 async function renderMemory() {
@@ -576,10 +692,11 @@ async function renderMemory() {
     nameList.appendChild(li);
   }
 
-  const total = accounts.length + nameRows.length;
+  const stats = await memory.learningStats();
   const chip = $("memoryChip");
-  chip.hidden = !total;
-  chip.textContent = `${accounts.length} account${accounts.length === 1 ? "" : "s"} · ${nameRows.length} name${nameRows.length === 1 ? "" : "s"} remembered`;
+  chip.hidden = !(stats.accounts + stats.names);
+  chip.textContent = `${stats.accounts} account${stats.accounts === 1 ? "" : "s"} · ${stats.names} name${stats.names === 1 ? "" : "s"} remembered`
+    + (stats.thisWeek ? ` · ${stats.thisWeek} learned this week` : "");
 }
 
 $("memExport").onclick = async () => {
@@ -658,6 +775,14 @@ if ("serviceWorker" in navigator && location.protocol !== "file:") {
   names = await memory.nameBook();
   updateExample();
   renderMemory();
+
+  teamHandle = await memory.getSyncHandle();
+  renderTeamState();
+  if (teamHandle) {
+    // Pull in whatever the rest of the office taught it since last time.
+    const permission = await teamHandle.queryPermission({ mode: "readwrite" });
+    if (permission === "granted") { await pushToTeamFile(); names = await memory.nameBook(); renderMemory(); }
+  }
 
   const batches = await memory.listBatches();
   if (batches.length) $("undoBtn").hidden = true;      // undo only within a session

@@ -213,9 +213,24 @@
           <input id="memFile" type="file" accept="application/json" hidden>
         </div>
       </div>
-      <p class="muted small">Fix a name once and it is reused everywhere. Export the memory file
-        to give the rest of the office the same names.</p>
+      <p class="muted small">Fix a name once and it is reused everywhere — and every rename you
+        correct by hand teaches it too.</p>
       <ul id="nameList" class="list"></ul>
+
+      <div class="team">
+        <div class="team-head">
+          <strong>Shared office memory</strong>
+          <span id="teamState" class="muted small">No shared file yet.</span>
+        </div>
+        <p class="muted small">Point every PC at one JSON file on your network drive.
+          What one person teaches today, everyone has tomorrow.</p>
+        <div class="actions">
+          <button id="teamPick" class="ghost sm">Use existing file</button>
+          <button id="teamCreate" class="ghost sm">Create file</button>
+          <button id="teamSync" class="ghost sm">Sync now</button>
+          <button id="teamForget" class="link">stop sharing</button>
+        </div>
+      </div>
     </section>
   </div>
 </main>

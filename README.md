@@ -34,20 +34,34 @@ Scans go through a real pipeline, not a plain OCR call:
 The bank, beneficiary, amount, account number, invoice number and date are then
 pulled out with plain rules (`static/engine.js`). No AI service, no API key, no server.
 
-## It learns
+## It learns every day
 
 - **Account numbers.** An IBAN never changes spelling, a company name does. When a
   receipt is read cleanly, the app stores *account number → company*. Every later
   receipt to that account is named the same way, even if the OCR mangles the name.
   IBANs are checked with the ISO 13616 checksum first, so a mis-read number is
   never learned.
-- **Your corrections.** "Fix name" on any row teaches both the spelling and the
-  account behind it.
+- **Your corrections.** "Fix name" teaches the spelling and the account behind it —
+  and so does simply editing a name in the table before renaming: the app compares
+  what it generated with what you kept, and learns the difference.
+- **OCR spellings.** When an account tells the app who a company really is, the
+  mangled spelling on that receipt is remembered too, so the next receipt matches
+  even if it shows no account number.
+- **Both sides.** The sending account is learned as well, so a company known as a
+  payer today is recognised as a beneficiary tomorrow.
 - **Duplicates.** Same bank, company, amount and day twice is flagged and left
   unticked, so a double-filed payment does not get renamed into place silently.
 
-Everything it learns lives in this browser (IndexedDB) and can be exported as one
-JSON file for the other office PCs.
+Everything it learns lives in this browser (IndexedDB). It also protects itself:
+a name that has proved itself over several receipts is not overwritten by one bad
+read, and only a person's correction can override a confirmed name.
+
+### One memory for the whole office
+
+Under **Name corrections → Shared office memory**, point every PC at a single JSON
+file on your network drive (`Create file` once, `Use existing file` on the others).
+Each PC merges that file when the page opens and writes back after every rename —
+newest entry per account wins. What one person teaches today, everyone has tomorrow.
 
 ---
 

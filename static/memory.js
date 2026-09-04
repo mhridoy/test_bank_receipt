@@ -50,6 +50,11 @@ const all = (store) => tx(store, "readonly", (s) => s.getAll());
 export async function rememberAccount(account, name, extra = {}) {
   if (!account || !name || name.length < 3) return;
   const existing = (await get("accounts", account)) || { key: account, seen: 0 };
+  // Don't let one bad read overwrite a name that has proved itself, unless a
+  // person confirmed the new one.
+  if (existing.name && existing.name !== name && !extra.confirmed
+      && existing.confirmed) return;
+  if (existing.name && existing.name !== name && !extra.confirmed && existing.seen >= 3) return;
   await put("accounts", {
     ...existing, ...extra,
     key: account,
@@ -66,9 +71,12 @@ export const forgetAccount = (account) => del("accounts", account);
 
 /* ── names: what a receipt says → what we call it ────────────────── */
 
-export async function rememberName(raw, clean) {
-  if (!raw || !clean) return;
-  await put("names", { key: raw, clean, updatedAt: Date.now() });
+export async function rememberName(raw, clean, source = "manual") {
+  if (!raw || !clean || raw.length < 3) return;
+  const existing = await get("names", raw);
+  // a person's correction always outranks something the app worked out itself
+  if (existing?.source === "manual" && source !== "manual") return;
+  await put("names", { key: raw, clean, source, updatedAt: Date.now() });
 }
 export const listNames = () => all("names");
 export const forgetName = (raw) => del("names", raw);
@@ -93,6 +101,53 @@ export async function saveBatch(entries, folderName) {
 export const listBatches = async () => (await all("history")).sort((a, b) => b.id - a.id);
 export const forgetBatch = (id) => del("history", id);
 
+/* ── the shared team file ────────────────────────────────────────── */
+/* One JSON file on a network drive that every PC merges from and writes back to,
+   so what one person teaches on Sunday is known by everyone on Monday. Chrome
+   can store the file handle itself, so the file is only picked once per PC. */
+
+export async function setSyncHandle(handle) { await put("settings", { key: "sync", value: handle }); }
+export async function getSyncHandle() { return (await get("settings", "sync"))?.value || null; }
+export async function clearSyncHandle() { await del("settings", "sync"); }
+
+async function readSyncFile(handle) {
+  const file = await handle.getFile();
+  const text = await file.text();
+  return text.trim() ? JSON.parse(text) : { accounts: [], names: [] };
+}
+
+/** Merge both ways: newest wins per key, and sighting counts add up. */
+export async function syncWithFile(handle) {
+  if (await handle.queryPermission({ mode: "readwrite" }) !== "granted"
+      && await handle.requestPermission({ mode: "readwrite" }) !== "granted") {
+    return { error: "permission" };
+  }
+
+  let remote = { accounts: [], names: [] };
+  try { remote = await readSyncFile(handle); } catch { /* new or empty file */ }
+
+  let pulled = 0;
+  for (const row of remote.accounts || []) {
+    const mine = await get("accounts", row.key);
+    if (!mine || (row.updatedAt || 0) > (mine.updatedAt || 0)) {
+      await put("accounts", { ...row, seen: Math.max(row.seen || 1, mine?.seen || 0) });
+      pulled++;
+    }
+  }
+  for (const row of remote.names || []) {
+    const mine = await get("names", row.key);
+    if (!mine || (row.updatedAt || 0) > (mine.updatedAt || 0)) { await put("names", row); pulled++; }
+  }
+
+  const merged = { version: 1, updatedAt: new Date().toISOString(),
+                   accounts: await listAccounts(), names: await listNames() };
+  const writable = await handle.createWritable();
+  await writable.write(JSON.stringify(merged, null, 2));
+  await writable.close();
+
+  return { pulled, pushed: merged.accounts.length + merged.names.length };
+}
+
 /* ── settings ────────────────────────────────────────────────────── */
 
 export async function loadSettings(defaults) {
@@ -107,6 +162,18 @@ export async function exportAll() {
   return {
     version: 1, exportedAt: new Date().toISOString(),
     accounts: await listAccounts(), names: await listNames(),
+  };
+}
+
+/** What the app picked up recently - shown so people can see it improving. */
+export async function learningStats() {
+  const week = Date.now() - 7 * 24 * 3600 * 1000;
+  const accounts = await listAccounts();
+  const names = await listNames();
+  return {
+    accounts: accounts.length,
+    names: names.length,
+    thisWeek: [...accounts, ...names].filter((r) => (r.updatedAt || 0) > week).length,
   };
 }
 

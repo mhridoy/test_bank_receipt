@@ -244,3 +244,9 @@ dialog menu { display:flex; gap:9px; justify-content:flex-end; padding:0; margin
 .toast.bad { background:var(--bad); color:#fff; }
 
 @media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
+
+/* shared office memory */
+.team { margin-top:16px; padding-top:14px; border-top:1px solid var(--line); }
+.team-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:4px; }
+.team-head strong { font-size:13.5px; }
+.team .actions { margin-top:10px; flex-wrap:wrap; }
