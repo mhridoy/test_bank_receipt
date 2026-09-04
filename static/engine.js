@@ -28,6 +28,7 @@ const BANK_PATTERNS = [
 const RECEIVER_RULES = [
   ["line", /\bTO\s*:\s*([A-Za-z][A-Za-z0-9 &.'\-]{3,70}?)\s*(?:,|;|\bREF\b|$)/i],
   ["line", /\bBeneficiary\s+(?:Name\s*[:\-]?\s*)?([A-Za-z][A-Za-z0-9 &.'\-]{3,70}?)\s+Beneficiary\s+Account/i],
+  ["line", /\bBeneficiary\s*Name\s*[:\-]?\s*([A-Za-z][A-Za-z0-9 &.'\-]{3,70}?)(?=\s+(?:Amount|Reference|Ref\b|Invoice|Bill|IBAN|Account|Bank|Date|Purpose|Currency|Status|$))/i],
   ["line", /\bBeneficiary\s+Name\s*[:\-]?\s*([A-Za-z][A-Za-z0-9 &.'\-]{3,70}?)\s{2,}/i],
   ["line", /\b(?:Payee|Pay\s+to|Credit\s+to)\s*[:\-]?\s*([A-Za-z][A-Za-z0-9 &.'\-]{3,70}?)\s*(?:,|$)/i],
   ["raw",  /(?:المستفيد|اسم\s*المستفيد)\s*[:\-]?\s*(.+)/],
@@ -66,10 +67,22 @@ const FEE_WORDS = /fee|fees|comission|commission|charge|charges|vat|tax|رسوم
 /* Account numbers are the strongest identifier on a receipt: the beneficiary's
    name may be spelled three different ways, but the IBAN never changes. */
 
-const IBAN_TOKEN = /\b([A-Z]{2}\d{12,30})\b/g;
-const BENEFICIARY_CONTEXT = /beneficiary|payee|creditto|المستفيد|\bTO:/i;
-const OWN_ACCOUNT_CONTEXT = /iban|accountnumber|accountno|fromaccount|debitaccount|رقمالحساب|الآيبان/i;
+/* No leading \b: OCR often glues the label to the number ("BeneficiaryAccountSA04…"),
+   so the scan checks the preceding character itself instead. */
+const IBAN_TOKEN = /([A-Z]{2}\d{12,30})\b/g;
+const PLAIN_ACCOUNT_TOKEN = /(\d{9,24})\b/g;
 
+/* Words that say whose account a number is. Transfers inside one bank print a
+   plain account number and no IBAN at all, so both shapes have to be recognised. */
+const BENEFICIARY_CONTEXT =
+  /beneficiary|payee|credit(?:ed)?\s*(?:to|account)|to\s*account|recipient|receiver|in\s*favou?r|المستفيد|حسابالمستفيد|الى/i;
+const OWN_ACCOUNT_CONTEXT =
+  /\biban\b|account\s*(?:number|no|#)|from\s*account|debit(?:ed)?\s*account|source\s*account|your\s*account|رقمالحساب|الآيبان|حسابك/i;
+
+/* Long digit strings that are not accounts: phone numbers, registers, boxes,
+   references, cheque numbers, VAT numbers, timestamps. */
+const NOT_AN_ACCOUNT =
+  /tel|phone|fax|mobile|p\.?o\.?\s*box|box|c\.?r\.?|commercialregister|register|vat|tax|ref(?:erence)?|cheque|check|invoice|bill|order|ticket|otp|zip|postal|هاتف|جوال|سجل|ضريب|مرجع/i;
 /** OCR mixes up letters and digits inside numbers - repair them in numeric fields. */
 export function fixDigits(value) {
   return String(value || "")
@@ -93,10 +106,10 @@ export function validIban(iban) {
 
 function normaliseAccount(value) {
   if (!value) return "";
-  const cleaned = String(value).replace(/\s+/g, "").toUpperCase();
-  const iban = cleaned.match(/^([A-Z]{2})(.{10,30})$/);
+  const cleaned = String(value).replace(/[\s\-]+/g, "").toUpperCase();
+  const iban = cleaned.match(/^([A-Z]{2})(\d[\dA-Z]{10,30})$/);
   if (iban) return iban[1] + fixDigits(iban[2]).replace(/[^0-9]/g, "");
-  return fixDigits(cleaned).replace(/[^0-9]/g, "");
+  return cleaned.replace(/[^0-9]/g, "");
 }
 
 const LABEL_WORDS = new Set(["account type", "account number", "account name", "current account",
@@ -118,6 +131,7 @@ function views(text) {
   return {
     raw: text,
     line: deglue(text.replace(/\n/g, " \n ")).replace(/\s+/g, " "),
+    tight: text.replace(/\s+/g, " "),      // spacing untouched: keeps IBANs whole
     flat: text.replace(/\s+/g, ""),
   };
 }
@@ -190,49 +204,78 @@ function findDate(v) {
   return "";
 }
 
-/** Sort the IBANs on the page into "ours" and "the beneficiary's".
+/** Work out which account number belongs to the beneficiary and which is ours.
 
-    Receipts print both, so position and the words around each one decide: an IBAN
-    introduced by "Beneficiary"/"TO:" belongs to the payee, one introduced by
-    "IBAN"/"Account Number" is the account the money left. When only labels for the
-    sender are found and a second IBAN exists further down (inside the narration),
-    that later one is the beneficiary. */
+    A receipt may print an IBAN, a plain account number, or both - a transfer
+    inside the same bank usually has no IBAN. Each candidate is judged by the words
+    printed just before it ("Beneficiary Account", "IBAN", "Account Number"), by
+    whether it passes the IBAN checksum, and by where it sits on the page: the
+    beneficiary's number is the one inside the narration, further down. */
 function findAccounts(v) {
-  const flat = v.flat;
-  const found = [];
-  for (const match of flat.matchAll(IBAN_TOKEN)) {
-    const value = match[1];
-    const before = flat.slice(Math.max(0, match.index - 45), match.index);
-    found.push({
-      value,
-      valid: validIban(value),
-      beneficiary: BENEFICIARY_CONTEXT.test(before),
-      own: OWN_ACCOUNT_CONTEXT.test(before),
-      index: match.index,
+  const candidates = [];
+  const seen = new Set();
+
+  const consider = (text, value, index, kind) => {
+    if (seen.has(value)) return;
+    const previous = text[index - 1] || " ";
+    if (/\d/.test(previous)) return;                          // middle of a longer number
+    if (kind === "iban" && /[A-Z]/.test(previous)) return;     // middle of a word in caps
+    const before = text.slice(Math.max(0, index - 55), index);
+    const tail = before.slice(-28);
+    if (NOT_AN_ACCOUNT.test(tail)) return;
+    if (/[\d,]\.\d?$/.test(before.trimEnd())) return;         // part of an amount
+    seen.add(value);
+    candidates.push({
+      value, index, kind,
+      valid: kind === "iban" ? validIban(value) : value.length >= 9,
+      beneficiary: BENEFICIARY_CONTEXT.test(tail),
+      own: OWN_ACCOUNT_CONTEXT.test(tail),
     });
+  };
+
+  // `tight` keeps an IBAN in one piece; `flat` survives OCR that dropped spaces.
+  for (const text of [v.tight, v.flat]) {
+    for (const m of text.matchAll(IBAN_TOKEN)) consider(text, m[1], m.index, "iban");
+  }
+  const ibanDigits = candidates.filter((c) => c.kind === "iban").map((c) => c.value.slice(2));
+  for (const text of [v.tight, v.flat]) {
+    for (const m of text.matchAll(PLAIN_ACCOUNT_TOKEN)) {
+      if (ibanDigits.some((d) => d.includes(m[1]))) continue;   // the tail of an IBAN
+      consider(text, m[1], m.index, "plain");
+    }
   }
 
-  const preferred = found.filter((a) => a.valid);
-  const pool = preferred.length ? preferred : found;
+  const usable = candidates.filter((c) => c.valid);
+  const pool = usable.length ? usable : candidates;
+  if (!pool.length) return { receiver_account: "", receiver_account_valid: null,
+                             receiver_accounts: [], sender_account: "" };
 
-  let receiver = pool.find((a) => a.beneficiary && !a.own);
-  let sender = pool.find((a) => a.own && !a.beneficiary);
-  if (!receiver) receiver = pool.filter((a) => a !== sender).pop();   // narration comes last
-  if (!sender) sender = pool.find((a) => a !== receiver);
+  const rank = (c) => (c.kind === "iban" ? 2 : 0) + (c.valid ? 1 : 0);
+  const pick = (list) => list.sort((a, b) => rank(b) - rank(a))[0];
 
-  const plainAccount = firstMatch([
-    ["line", /\bAccount\s*(?:No\.?|Number)?\s*[:\-]?\s*(\d{9,20})\b/i],
-    ["line", /(?:رقم\s*الحساب)\s*[:\-]?\s*(\d{9,20})/],
-  ], v);
+  let receiver = pick(pool.filter((c) => c.beneficiary && !c.own));
+  let sender = pick(pool.filter((c) => c.own && !c.beneficiary));
 
-  const beneficiaryPlain = firstMatch([
-    ["flat", /Beneficiary\s*Account:?(\d{9,24})\b/i],
-  ], v);
+  if (!receiver) {
+    // No label found: the beneficiary's number is the later one on the page.
+    const rest = pool.filter((c) => c !== sender);
+    receiver = rest.length ? rest[rest.length - 1] : null;
+  }
+  if (!sender) sender = pool.find((c) => c !== receiver) || null;
+
+  // every candidate on the beneficiary's side, so both an IBAN and a plain
+  // account number for the same company can be remembered together
+  const receiverAll = receiver
+    ? [...new Set(pool.filter((c) => c.beneficiary || c === receiver)
+                      .map((c) => normaliseAccount(c.value)))]
+    : [];
 
   return {
-    receiver_account: normaliseAccount(receiver?.value || beneficiaryPlain || ""),
+    receiver_account: normaliseAccount(receiver?.value || ""),
+    receiver_account_kind: receiver?.kind || "",
     receiver_account_valid: receiver ? receiver.valid : null,
-    sender_account: normaliseAccount(sender?.value || plainAccount || ""),
+    receiver_accounts: receiverAll,
+    sender_account: normaliseAccount(sender?.value || ""),
   };
 }
 

@@ -165,7 +165,12 @@ async function readWithRetry(row, o, onStatus) {
 
 /** Fill in from memory: the account number is the anchor, the printed name is not. */
 async function applyMemory(fields) {
-  const known = await memory.lookupAccount(fields.receiver_account);
+  let known = await memory.lookupAccount(fields.receiver_account);
+  for (const key of fields.receiver_accounts || []) {          // an in-bank transfer
+    if (known?.name) break;                                    // may print a different
+    known = await memory.lookupAccount(key);                   // number for the same firm
+    if (known?.name) fields.receiver_account = key;
+  }
   if (known?.name) {
     const printed = aliasKey(fields.receiver_name || "");
     if (!printed || aliasKey(known.name) !== printed) {
@@ -186,8 +191,14 @@ async function learnFrom(fields) {
   const trustworthy = fields.receiver_account &&
     (fields.receiver_account_valid !== false) &&   // never learn from a mis-read IBAN
     name && name.length > 3 && !fields.from_memory;
-  if (trustworthy) {
-    await memory.rememberAccount(fields.receiver_account, name, { bank: fields.receiver_bank || "" });
+  if (!trustworthy) return;
+  // A company can appear as an IBAN on one receipt and a plain account number on
+  // an in-bank transfer: remember every number seen on the beneficiary's side.
+  const keys = fields.receiver_accounts?.length ? fields.receiver_accounts : [fields.receiver_account];
+  for (const key of keys) {
+    await memory.rememberAccount(key, name, { bank: fields.receiver_bank || "",
+                                              kind: key === fields.receiver_account
+                                                ? fields.receiver_account_kind : "linked" });
   }
 }
 
