@@ -24,6 +24,9 @@
       {{ 'OCR ready' if ocr_ready else 'OCR unavailable' }}
     </span>
     <span class="badge">{{ 'Hosted' if cloud_mode else 'Offline · this PC' }}</span>
+    {% if locked %}
+    <form method="post" action="/logout"><button class="link" type="submit">sign out</button></form>
+    {% endif %}
   </div>
 </header>
 

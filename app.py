@@ -8,13 +8,16 @@ and scanned ones through offline OCR (RapidOCR), then parsed with plain rules.
 """
 from __future__ import annotations
 
+import hmac
 import os
+import secrets
 import socket
 import threading
 import webbrowser
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import (Flask, jsonify, redirect, render_template, request,
+                   send_file, session, url_for)
 
 from receipt_renamer import config, ocr, renamer, uploads
 
@@ -24,6 +27,44 @@ app.config["MAX_CONTENT_LENGTH"] = (uploads.MAX_FILES * uploads.MAX_FILE_MB + 32
 
 # CLOUD_MODE=1 when hosted (Render): no local folder access, upload/download only.
 CLOUD_MODE = os.environ.get("CLOUD_MODE") == "1"
+
+# Set APP_PASSWORD on a hosted instance so only the office can use it.
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "").strip()
+app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
+
+OPEN_PATHS = {"/login", "/healthz"}
+
+
+@app.before_request
+def require_password():
+    if not APP_PASSWORD or request.path in OPEN_PATHS or request.path.startswith("/static/"):
+        return None
+    if session.get("auth"):
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Session expired - reload the page and sign in."}), 401
+    return redirect(url_for("login", next=request.path))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not APP_PASSWORD:
+        return redirect("/")
+    error = ""
+    if request.method == "POST":
+        if hmac.compare_digest(request.form.get("password", ""), APP_PASSWORD):
+            session["auth"] = True
+            session.permanent = True
+            return redirect(request.args.get("next") or "/")
+        error = "Wrong password."
+    return render_template("login.html", error=error)
+
+
+@app.post("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
 
 
 def _folder_arg(raw: str) -> Path:
@@ -41,6 +82,7 @@ def index():
         ocr_ready=ocr.available(),
         ocr_error=ocr.engine_error(),
         cloud_mode=CLOUD_MODE,
+        locked=bool(APP_PASSWORD),
         max_files=uploads.MAX_FILES,
         max_file_mb=uploads.MAX_FILE_MB,
     )

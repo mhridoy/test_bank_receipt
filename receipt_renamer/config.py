@@ -22,7 +22,7 @@ DEFAULTS = {
     "recursive": False,
     "strip_legal_suffix": True,
     "invoice_from_filename": True,
-    "max_workers": 4,
+    "max_workers": int(os.environ.get("MAX_WORKERS", "1" if os.environ.get("CLOUD_MODE") == "1" else "4")),
     "last_folder": "",
     # Optional Claude assist for layouts the rules cannot read. Off by default;
     # the app is fully functional (and free) without it.

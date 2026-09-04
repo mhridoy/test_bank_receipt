@@ -207,3 +207,11 @@ dialog menu { display:flex; gap:9px; justify-content:flex-end; padding:0; margin
   background:var(--ink); color:var(--bg); padding:11px 18px; border-radius:10px;
   font-size:13.5px; box-shadow:var(--shadow); z-index:100; max-width:90vw;
 }
+
+/* login */
+.login-body { display:grid; place-items:center; min-height:100vh; padding:20px; }
+.login-card { width:min(380px,100%); display:grid; gap:14px; padding:26px; }
+.login-card .brand { margin-bottom:4px; }
+.login-card h1 { font-size:17px; }
+.login-card p { font-size:13px; color:var(--ink-2); }
+.login-error { color:var(--bad); font-size:13px; }

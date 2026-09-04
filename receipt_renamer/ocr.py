@@ -6,11 +6,14 @@ API key. Everything happens on the PC; nothing leaves the machine.
 """
 from __future__ import annotations
 
+import os
 import re
 import threading
 from pathlib import Path
 
 DEFAULT_DPI = 400          # 400 keeps word gaps that 200 dpi glues together.
+MAX_PIXELS = int(os.environ.get("OCR_MAX_PIXELS", "4000"))          # cap the long edge: a huge scan must not eat the RAM
+                           # of a small server (and OCR gains nothing above this)
 
 _engine = None
 _engine_lock = threading.Lock()
@@ -35,7 +38,11 @@ def load_engine():
         if _engine is None:
             try:
                 from rapidocr_onnxruntime import RapidOCR
-                _engine = RapidOCR()
+                # Detection runs on a downscaled copy (cheap) while recognition
+                # still crops from the full-resolution page (accurate). One thread
+                # each: these servers are small, and pages are processed serially.
+                _engine = RapidOCR(det_limit_type="max", det_limit_side_len=1280,
+                                   intra_op_num_threads=1, inter_op_num_threads=1)
             except Exception as exc:
                 _engine_error = str(exc)
                 return None
@@ -67,9 +74,18 @@ def ocr_pdf(path: Path, dpi: int = DEFAULT_DPI, max_pages: int = 3) -> str:
     try:
         with pymupdf.open(path) as doc:
             for i in range(min(max_pages, doc.page_count)):
-                png = doc[i].get_pixmap(dpi=dpi).tobytes("png")
+                page = doc[i]
+                scale = dpi / 72.0
+                longest = max(page.rect.width, page.rect.height) * scale
+                if longest > MAX_PIXELS:                       # keep memory bounded
+                    scale *= MAX_PIXELS / longest
+                pixmap = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale),
+                                         colorspace=pymupdf.csGRAY, alpha=False)
+                png = pixmap.tobytes("png")
+                del pixmap                                     # release before OCR runs
                 with _infer_lock:
                     result, _ = eng(png)
+                del png
                 if result:
                     chunks.append("\n".join(line[1] for line in result))
     except Exception:

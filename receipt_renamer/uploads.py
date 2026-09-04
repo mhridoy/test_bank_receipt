@@ -16,7 +16,9 @@ import uuid
 import zipfile
 from pathlib import Path
 
-MAX_FILES = 40
+import os
+
+MAX_FILES = int(os.environ.get("MAX_UPLOAD_FILES", "20"))
 MAX_FILE_MB = 20
 SESSION_TTL = 3600          # seconds
 

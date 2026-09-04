@@ -144,8 +144,17 @@ $("cancelBtn").onclick = () => jobId && post(`/api/job/${jobId}/cancel`);
 
 async function poll() {
   if (!jobId) return;
-  const data = await fetch(`/api/job/${jobId}`).then((r) => r.json());
-  if (data.error) return clearInterval(poller);
+  const res = await fetch(`/api/job/${jobId}`);
+  if (res.status === 401) { location.reload(); return; }
+  const data = await res.json();
+  if (data.error) {
+    clearInterval(poller);
+    $("progress").classList.add("hidden");
+    toast(res.status === 404
+      ? "The server restarted and lost this batch — please upload again."
+      : data.error, 6000);
+    return;
+  }
   render(data);
   if (data.finished) {
     clearInterval(poller);
