@@ -113,7 +113,23 @@ Two files, both plain Python lists:
 Send a sample PDF of any bank that comes out wrong and it is usually a one-line
 addition. `samples/` holds the current test receipts.
 
-## 7. Layout
+## 7. About hosting it on a server
+
+**A hosted copy cannot rename files in your folder.** A web page served from a
+server has no access to `D:\Receipts` on your PC — the browser forbids it. That
+is why this app is meant to run *on* the PC that holds the receipts: only then
+can it rename files where they sit.
+
+The repo does contain `Dockerfile` + `render.yaml` for a hosted copy, but that
+copy runs in a different mode (`CLOUD_MODE=1`): you upload PDFs, it renames the
+copies and gives you a ZIP back. Useful only for someone who cannot install
+anything locally — and it sends receipts to a server, which the desktop version
+never does. Set `APP_PASSWORD` (and `SECRET_KEY`) if you do host it.
+
+For the office, run it locally on each PC, or on one PC that has the shared
+receipts drive mapped.
+
+## 8. Layout
 
 ```
 app.py                     Flask routes
