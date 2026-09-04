@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Receipt Renamer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-cloud="{{ '1' if cloud_mode else '0' }}">
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">₪</span>
+    <div>
+      <h1>Receipt Renamer</h1>
+      <p>Bank receipts → clean, searchable file names</p>
+    </div>
+  </div>
+  <div class="badges">
+    <span class="badge {{ 'good' if ocr_ready else 'bad' }}">
+      {{ 'OCR ready' if ocr_ready else 'OCR unavailable' }}
+    </span>
+    <span class="badge">{{ 'Hosted' if cloud_mode else 'Offline · this PC' }}</span>
+  </div>
+</header>
+
+<main>
+  <!-- STEP 1 ─ source -->
+  <section class="card">
+    <div class="card-head">
+      <span class="step">1</span>
+      <h2>Choose receipts</h2>
+    </div>
+
+    {% if not cloud_mode %}
+    <div class="tabs">
+      <button class="tab active" data-tab="folder">Folder on this PC</button>
+      <button class="tab" data-tab="upload">Upload files</button>
+    </div>
+    {% endif %}
+
+    {% if not cloud_mode %}
+    <div class="tabpane" id="pane-folder">
+      <div class="field-row">
+        <input id="folder" type="text" spellcheck="false" class="mono"
+               value="{{ settings.last_folder }}" placeholder="C:\Users\you\Documents\Receipts">
+        <button id="browseBtn" class="ghost">Browse</button>
+        <button id="scanBtn" class="primary">Read receipts</button>
+      </div>
+      <label class="check"><input type="checkbox" id="recursive" {{ 'checked' if settings.recursive }}>
+        <span>Include sub-folders</span></label>
+    </div>
+    {% endif %}
+
+    <div class="tabpane {{ '' if cloud_mode else 'hidden' }}" id="pane-upload">
+      <div id="drop" class="dropzone">
+        <input id="fileInput" type="file" accept="application/pdf" multiple hidden>
+        <div class="drop-icon">↑</div>
+        <p><strong>Drop PDF receipts here</strong> or <button id="pickBtn" class="link">choose files</button></p>
+        <p class="hint">up to {{ max_files }} files, {{ max_file_mb }} MB each{% if cloud_mode %} · copies are deleted from the server after 1 hour{% endif %}</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- STEP 2 ─ pattern -->
+  <section class="card">
+    <div class="card-head">
+      <span class="step">2</span>
+      <h2>Name pattern</h2>
+      <button id="advBtn" class="link right">Options</button>
+    </div>
+
+    <div class="presets" id="presets">
+      {% for name, tpl in presets.items() %}
+      <button class="preset {{ 'active' if tpl == settings.template }}" data-tpl="{{ tpl }}">
+        <span class="preset-name">{{ name.replace('_', ' ') }}</span>
+        <span class="preset-tpl mono">{{ tpl }}</span>
+      </button>
+      {% endfor %}
+    </div>
+
+    <div class="field-row">
+      <input id="template" type="text" spellcheck="false" class="mono" value="{{ settings.template }}">
+    </div>
+    <p class="example">Example: <code id="example" class="mono"></code></p>
+
+    <div id="advanced" class="advanced hidden">
+      <label class="check"><input type="checkbox" id="stripLegal" {{ 'checked' if settings.strip_legal_suffix }}>
+        <span>Drop “Company / LLC / Est” from names</span></label>
+      <label class="check"><input type="checkbox" id="invFromName" {{ 'checked' if settings.invoice_from_filename }}>
+        <span>Take the invoice number from the old file name when the receipt has none</span></label>
+      <label class="inline">Scan quality
+        <select id="ocrDpi">
+          <option value="300" {{ 'selected' if settings.ocr_dpi == 300 }}>300 dpi · faster</option>
+          <option value="400" {{ 'selected' if settings.ocr_dpi == 400 }}>400 dpi · recommended</option>
+          <option value="500" {{ 'selected' if settings.ocr_dpi == 500 }}>500 dpi · hard scans</option>
+        </select>
+      </label>
+      <div class="tokens">
+        {% for t in ['bank','sender','receiver','amount','amount_net','currency','invoice','ref','date','receiver_bank','orig'] %}
+        <button class="token mono" data-token="{{ '{' ~ t ~ '}' }}">{{ '{' ~ t ~ '}' }}</button>
+        {% endfor %}
+      </div>
+    </div>
+  </section>
+
+  <!-- STEP 3 ─ results -->
+  <section class="card" id="results" hidden>
+    <div class="card-head">
+      <span class="step">3</span>
+      <h2>Review &amp; rename</h2>
+      <div class="right actions">
+        <button id="csvBtn" class="ghost">Export CSV</button>
+        <button id="downloadBtn" class="ghost" hidden>Download ZIP</button>
+        <button id="applyBtn" class="primary" disabled>Rename selected</button>
+      </div>
+    </div>
+
+    <div id="progress" class="progress hidden">
+      <div class="bar"><div id="barFill"></div></div>
+      <span id="progressText" class="muted"></span>
+      <button id="cancelBtn" class="link">stop</button>
+    </div>
+
+    <div class="stats" id="stats"></div>
+
+    <div class="table-wrap">
+      <table id="table">
+        <thead><tr>
+          <th class="col-check"><input type="checkbox" id="selectAll" checked></th>
+          <th>File</th>
+          <th>Details found</th>
+          <th class="col-status">Status</th>
+          <th class="col-act"></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- learned names + history -->
+  <div class="two-col">
+    <section class="card">
+      <div class="card-head"><h2>Learned names</h2></div>
+      <p class="muted small">Correct a name once — every future receipt with the same text uses your version.</p>
+      <ul id="aliasList" class="list"></ul>
+    </section>
+
+    {% if not cloud_mode %}
+    <section class="card">
+      <div class="card-head"><h2>Recent renames</h2><button id="histBtn" class="link right">refresh</button></div>
+      <ul id="history" class="list"></ul>
+    </section>
+    {% endif %}
+  </div>
+</main>
+
+<div id="browserModal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <strong id="browserPath" class="mono"></strong>
+      <button id="browserClose" class="link">close</button>
+    </div>
+    <ul id="browserList" class="list folders"></ul>
+    <div class="modal-foot">
+      <button id="browserUp" class="ghost">↑ Up</button>
+      <button id="browserPick" class="primary">Use this folder</button>
+    </div>
+  </div>
+</div>
+
+<dialog id="teachDialog">
+  <h3>Teach a name</h3>
+  <p class="muted small">The receipt spells it like this. Type how it should appear in file names.</p>
+  <label class="lbl">On the receipt</label>
+  <input id="teachRaw" type="text" class="mono" readonly>
+  <label class="lbl">Use this name</label>
+  <input id="teachClean" type="text" placeholder="Pioneer Metal Corners" autofocus>
+  <menu>
+    <button id="teachCancel" class="ghost">Cancel</button>
+    <button id="teachSave" class="primary">Save</button>
+  </menu>
+</dialog>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: receipt-renamer
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: CLOUD_MODE
+        value: "1"

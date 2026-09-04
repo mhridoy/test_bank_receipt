@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Real receipts are never committed - this repo is public.
+samples/
