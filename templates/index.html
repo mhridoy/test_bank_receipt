@@ -4,84 +4,137 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Receipt Renamer</title>
+<meta name="description" content="Rename bank receipt PDFs in your own folder — no upload, no install.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#3f5bf6">
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 </head>
 <body>
 
 <header class="topbar">
   <div class="brand">
-    <span class="logo">₪</span>
-    <div>
+    <span class="logo" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 3h11l5 5v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/><path d="M14 3v6h6"/>
+        <path d="M8 13h6"/><path d="M8 17h8"/>
+      </svg>
+    </span>
+    <div class="brand-text">
       <h1>Receipt Renamer</h1>
       <p>Bank receipts → clean, searchable file names</p>
     </div>
   </div>
-  <div class="badges">
-    <span class="badge good">Files never leave this PC</span>
-    <span class="badge">No install</span>
+
+  <div class="topbar-right">
+    <span class="badge good" title="Everything runs inside this browser tab">
+      <span class="dot"></span> Private · nothing uploaded
+    </span>
+    <button id="themeBtn" class="icon-btn" title="Light / dark" aria-label="Toggle theme">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
   </div>
 </header>
 
 <main>
-  <section class="card">
-    <div class="card-head"><span class="step">1</span><h2>Pick the receipts folder</h2></div>
-
-    <div class="field-row">
-      <button id="pickBtn" class="primary">Choose folder…</button>
-      <span id="folderRow" class="folder-pill" hidden>
-        <strong id="folderName" class="mono"></strong>
-        <button id="rescanBtn" class="link">read again</button>
-      </span>
+  <!-- 1 ── source -->
+  <section class="card reveal" id="cardSource">
+    <div class="card-head">
+      <span class="step">1</span><h2>Receipts folder</h2>
+      <span id="memoryChip" class="chip soft right" hidden></span>
     </div>
-    <p class="muted small pad-t">
-      The browser asks your permission once, then this page reads and renames the PDFs
-      directly in that folder. Nothing is uploaded — the reading and the OCR both run inside this tab.
-    </p>
+
+    <div id="pickState">
+      <button id="pickBtn" class="big-drop">
+        <span class="big-drop-icon">
+          <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor"
+               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+          </svg>
+        </span>
+        <span class="big-drop-text">
+          <strong>Choose the folder with your receipts</strong>
+          <small>Your browser will ask permission once. The files stay where they are.</small>
+        </span>
+      </button>
+    </div>
+
+    <div id="folderState" hidden>
+      <div class="folder-bar">
+        <span class="folder-icon">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+          </svg>
+        </span>
+        <strong id="folderName" class="mono"></strong>
+        <span id="fileCount" class="muted small"></span>
+        <span class="grow"></span>
+        <button id="rescanBtn" class="ghost sm">Read again</button>
+        <button id="changeBtn" class="ghost sm">Change folder</button>
+      </div>
+    </div>
+
     <label class="check"><input type="checkbox" id="recursive"><span>Include sub-folders</span></label>
 
-    <div id="noFs" class="warn-box" hidden>
-      This browser cannot open a local folder. Use <strong>Chrome</strong> or <strong>Edge</strong>
-      on Windows/macOS (Firefox and Safari do not support folder access yet).
+    <div id="noFs" class="notice warn" hidden>
+      <strong>Chrome or Edge needed.</strong> Firefox and Safari cannot open a local folder yet,
+      so this page cannot rename your files there.
     </div>
   </section>
 
-  <section class="card">
+  <!-- 2 ── pattern -->
+  <section class="card reveal">
     <div class="card-head">
       <span class="step">2</span><h2>Name pattern</h2>
-      <button id="advBtn" class="link right">Options</button>
+      <button id="advBtn" class="link right">Advanced</button>
     </div>
 
     <div class="presets">
       {% for name, tpl in presets.items() %}
-      <button class="preset {{ 'active' if tpl == default_template }}" data-tpl="{{ tpl }}">
+      <button class="preset" data-tpl="{{ tpl }}">
         <span class="preset-name">{{ name.replace('_', ' ') }}</span>
         <span class="preset-tpl mono">{{ tpl }}</span>
       </button>
       {% endfor %}
     </div>
 
-    <div class="field-row">
-      <input id="template" type="text" spellcheck="false" class="mono" value="{{ default_template }}">
-    </div>
-    <p class="example">Example: <code id="example" class="mono"></code></p>
+    <input id="template" type="text" spellcheck="false" class="mono field" value="{{ default_template }}">
+    <p class="example"><span class="muted small">Preview</span> <code id="example" class="mono"></code></p>
 
-    <div id="advanced" class="advanced hidden">
-      <label class="check"><input type="checkbox" id="stripLegal" checked>
-        <span>Drop “Company / LLC / Est” from names</span></label>
-      <label class="check"><input type="checkbox" id="invFromName" checked>
-        <span>Take the invoice number from the old file name when the receipt has none</span></label>
-      <label class="check"><input type="checkbox" id="useOcr" checked>
-        <span>Read scanned receipts with OCR (downloaded once, then works offline)</span></label>
-      <label class="inline">OCR language
-        <select id="ocrLangs">
-          <option value="eng">English</option>
-          <option value="eng+ara">English + Arabic (slower)</option>
-        </select>
-      </label>
+    <div id="advanced" class="advanced" hidden>
+      <div class="adv-grid">
+        <label class="check"><input type="checkbox" id="stripLegal" checked>
+          <span>Drop “Company / LLC / Est” from names</span></label>
+        <label class="check"><input type="checkbox" id="invFromName" checked>
+          <span>Use the invoice number from the old file name when the receipt has none</span></label>
+        <label class="check"><input type="checkbox" id="useOcr" checked>
+          <span>Read scanned receipts with OCR</span></label>
+        <label class="check"><input type="checkbox" id="autoLearn" checked>
+          <span>Remember account numbers and their company names</span></label>
+      </div>
+      <div class="adv-row">
+        <label class="inline">Quality
+          <select id="quality">
+            <option value="auto">Auto — retry harder when unsure</option>
+            <option value="fast">Fast</option>
+            <option value="balanced">Balanced</option>
+            <option value="sharp">Sharp</option>
+          </select>
+        </label>
+        <label class="inline">OCR language
+          <select id="ocrLangs">
+            <option value="eng">English</option>
+            <option value="eng+ara">English + Arabic</option>
+          </select>
+        </label>
+      </div>
       <div class="tokens">
         {% for t in ['bank','sender','receiver','amount','amount_net','currency','invoice','ref','date','receiver_bank','orig'] %}
         <button class="token mono" data-token="{{ '{' ~ t ~ '}' }}">{{ '{' ~ t ~ '}' }}</button>
@@ -90,65 +143,106 @@
     </div>
   </section>
 
-  <section class="card" id="results" hidden>
+  <!-- 3 ── review -->
+  <section class="card reveal" id="results" hidden>
     <div class="card-head">
-      <span class="step">3</span><h2>Review &amp; rename</h2>
+      <span class="step">3</span><h2>Review</h2>
       <div class="right actions">
-        <button id="csvBtn" class="ghost">Export CSV</button>
-        <button id="undoBtn" class="ghost" hidden>Undo rename</button>
-        <button id="applyBtn" class="primary" disabled>Rename selected</button>
+        <button id="csvBtn" class="ghost sm">Export CSV</button>
+        <button id="undoBtn" class="ghost sm" hidden>Undo last rename</button>
       </div>
     </div>
 
-    <div id="progress" class="progress hidden">
-      <div class="bar"><div id="barFill"></div></div>
-      <span id="progressText" class="muted"></span>
-      <button id="cancelBtn" class="link">stop</button>
+    <div id="progress" class="progress" hidden>
+      <div class="ring"><svg viewBox="0 0 36 36"><circle class="ring-bg" cx="18" cy="18" r="15.5"/>
+        <circle id="ringFill" class="ring-fill" cx="18" cy="18" r="15.5"/></svg>
+        <span id="ringText">0%</span></div>
+      <div class="progress-text">
+        <strong id="progressTitle">Reading receipts…</strong>
+        <span id="progressDetail" class="muted small"></span>
+      </div>
+      <button id="cancelBtn" class="ghost sm">Stop</button>
     </div>
 
-    <div class="stats" id="stats"></div>
+    <div class="toolbar">
+      <div class="filters" id="filters">
+        <button class="filter active" data-filter="all">All <b>0</b></button>
+        <button class="filter" data-filter="ready">Ready <b>0</b></button>
+        <button class="filter" data-filter="review">Needs a look <b>0</b></button>
+        <button class="filter" data-filter="duplicate">Duplicates <b>0</b></button>
+        <button class="filter" data-filter="error">Failed <b>0</b></button>
+      </div>
+      <div class="search">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="search" type="text" placeholder="Search files, banks, companies…">
+      </div>
+    </div>
 
     <div class="table-wrap">
       <table id="table">
         <thead><tr>
           <th class="col-check"><input type="checkbox" id="selectAll" checked></th>
-          <th>File</th><th>Details found</th>
+          <th>File</th><th>What the receipt says</th>
           <th class="col-status">Status</th><th class="col-act"></th>
         </tr></thead>
         <tbody></tbody>
       </table>
+      <div id="emptyState" class="empty" hidden>Nothing matches this filter.</div>
     </div>
   </section>
 
-  <section class="card">
-    <div class="card-head">
-      <h2>Learned names</h2>
-      <div class="right actions">
-        <button id="aliasExport" class="link">export</button>
-        <button id="aliasImport" class="link">import</button>
-        <input id="aliasFile" type="file" accept="application/json" hidden>
+  <!-- memory -->
+  <div class="two-col">
+    <section class="card reveal">
+      <div class="card-head">
+        <h2>Known accounts</h2>
+        <span class="muted small">learned automatically</span>
       </div>
-    </div>
-    <p class="muted small">Correct a name once — every future receipt with the same text uses your
-      version. Export the list to share it with the other PCs in the office.</p>
-    <ul id="aliasList" class="list"></ul>
-  </section>
+      <p class="muted small">An account number never changes spelling. Once a company is known,
+        every future receipt to that account is named the same way — even if the OCR misreads it.</p>
+      <ul id="accountList" class="list"></ul>
+    </section>
+
+    <section class="card reveal">
+      <div class="card-head">
+        <h2>Name corrections</h2>
+        <div class="right actions">
+          <button id="memExport" class="link">Export</button>
+          <button id="memImport" class="link">Import</button>
+          <input id="memFile" type="file" accept="application/json" hidden>
+        </div>
+      </div>
+      <p class="muted small">Fix a name once and it is reused everywhere. Export the memory file
+        to give the rest of the office the same names.</p>
+      <ul id="nameList" class="list"></ul>
+    </section>
+  </div>
 </main>
+
+<div id="actionBar" class="action-bar" hidden>
+  <span id="selCount"></span>
+  <span class="grow"></span>
+  <button id="clearSel" class="ghost sm">Clear</button>
+  <button id="applyBtn" class="primary">Rename selected</button>
+</div>
 
 <dialog id="teachDialog">
   <h3>Teach a name</h3>
-  <p class="muted small">The receipt spells it like this. Type how it should appear in file names.</p>
+  <p class="muted small" id="teachHint"></p>
   <label class="lbl">On the receipt</label>
-  <input id="teachRaw" type="text" class="mono" readonly>
+  <input id="teachRaw" type="text" class="mono field" readonly>
   <label class="lbl">Use this name</label>
-  <input id="teachClean" type="text" placeholder="Pioneer Metal Corners">
+  <input id="teachClean" type="text" class="field" placeholder="Pioneer Metal Corners">
+  <label class="check" id="teachAccountRow"><input type="checkbox" id="teachAccount" checked>
+    <span>Also remember it for account <code id="teachAccountNo" class="mono"></code></span></label>
   <menu>
     <button id="teachCancel" class="ghost">Cancel</button>
     <button id="teachSave" class="primary">Save</button>
   </menu>
 </dialog>
 
-<div id="toast" class="toast hidden"></div>
+<div id="toasts" class="toasts"></div>
 <script type="module" src="/static/app.js"></script>
 </body>
 </html>

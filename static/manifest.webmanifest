@@ -1,0 +1,12 @@
+{
+  "name": "Receipt Renamer",
+  "short_name": "Receipts",
+  "description": "Rename bank receipt PDFs in your own folder - nothing is uploaded.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f7f9",
+  "theme_color": "#3f5bf6",
+  "icons": [
+    { "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

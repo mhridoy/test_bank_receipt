@@ -1,127 +1,134 @@
-/* Drives the page: pick a local folder, read every receipt in the browser,
-   rename the files in place. No server, no upload - the File System Access
-   API hands the page a real handle to the folder the user picked. */
+/* Controller: pick a folder, read every receipt, review, rename in place.
+   Everything runs in this tab - see reader.js (workers + OCR), engine.js (rules)
+   and memory.js (what the app remembers between sessions). */
 
-import { parseText, buildName, aliasKey } from "./engine.js";
-import { readPdf, terminateOcr } from "./reader.js";
+import { animate, stagger } from "https://cdn.jsdelivr.net/npm/motion@11.11.17/+esm";
+import { parseText, buildName, duplicateKey, aliasKey } from "./engine.js";
+import { readPdf, shutdownReaders } from "./reader.js";
+import * as memory from "./memory.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const HAS_FS = "showDirectoryPicker" in window;
 
+const DEFAULTS = {
+  template: "{bank}_{receiver}_{amount}{currency}_{invoice}",
+  recursive: false, stripLegal: true, invFromName: true,
+  useOcr: true, autoLearn: true, quality: "auto", ocrLangs: "eng", theme: "system",
+};
+
+let settings = { ...DEFAULTS };
 let dirHandle = null;
-let rows = [];            // {name, handle, parent, relative, fields, proposed, status, notes, engine}
-let undoStack = [];       // [{handle, from, to}]
+let rows = [];
+let names = { receiver: {}, sender: {}, bank: {} };
+let filter = "all";
+let search = "";
 let cancelled = false;
-let aliases = loadAliases();
+let teachRow = null;
 
-/* ── settings ─────────────────────────────────────────── */
-const SETTINGS_KEY = "receipt-renamer-settings";
-const ALIAS_KEY = "receipt-renamer-aliases";
+/* ── small helpers ─────────────────────────────────────────────── */
 
-function loadSettings() {
-  try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch { return {}; }
-}
-function saveSettings() {
-  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(options())); } catch { /* private mode */ }
-}
-function loadAliases() {
-  try { return JSON.parse(localStorage.getItem(ALIAS_KEY)) || { receiver: {}, sender: {}, bank: {} }; }
-  catch { return { receiver: {}, sender: {}, bank: {} }; }
-}
-function saveAliases() {
-  try { localStorage.setItem(ALIAS_KEY, JSON.stringify(aliases)); } catch { /* private mode */ }
+/** motion returns different control objects across versions - never assume .finished. */
+const finished = (controls) => Promise.resolve(controls?.finished ?? controls).catch(() => {});
+
+function toast(message, kind = "") {
+  const el = document.createElement("div");
+  el.className = `toast ${kind}`;
+  el.textContent = message;
+  $("toasts").appendChild(el);
+  animate(el, { opacity: [0, 1], y: [14, 0], scale: [0.96, 1] },
+          { duration: 0.28, easing: [0.2, 0.8, 0.2, 1] });
+  setTimeout(async () => {
+    await finished(animate(el, { opacity: 0, y: 8 }, { duration: 0.2 }));
+    el.remove();
+  }, 3800);
 }
 
 const options = () => ({
   template: $("template").value,
   recursive: $("recursive").checked,
-  strip_legal_suffix: $("stripLegal").checked,
-  invoice_from_filename: $("invFromName").checked,
-  ocr: $("useOcr").checked,
-  langs: $("ocrLangs").value,
+  stripLegal: $("stripLegal").checked,
+  invFromName: $("invFromName").checked,
+  useOcr: $("useOcr").checked,
+  autoLearn: $("autoLearn").checked,
+  quality: $("quality").value,
+  ocrLangs: $("ocrLangs").value,
+  theme: settings.theme,
 });
 
-function restoreSettings() {
-  const s = loadSettings();
-  if (s.template) $("template").value = s.template;
-  if (typeof s.recursive === "boolean") $("recursive").checked = s.recursive;
-  if (typeof s.strip_legal_suffix === "boolean") $("stripLegal").checked = s.strip_legal_suffix;
-  if (typeof s.invoice_from_filename === "boolean") $("invFromName").checked = s.invoice_from_filename;
-  if (typeof s.ocr === "boolean") $("useOcr").checked = s.ocr;
-  if (s.langs) $("ocrLangs").value = s.langs;
+async function persist() {
+  settings = options();
+  await memory.saveSettings(settings);
 }
 
-function toast(message, ms = 3500) {
-  const el = $("toast");
-  el.textContent = message;
-  el.classList.remove("hidden");
-  clearTimeout(el._t);
-  el._t = setTimeout(() => el.classList.add("hidden"), ms);
-}
+/* ── theme ─────────────────────────────────────────────────────── */
 
-/* ── name pattern ─────────────────────────────────────── */
+function applyTheme(theme) {
+  const dark = theme === "dark" ||
+    (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+}
+$("themeBtn").onclick = () => {
+  settings.theme = settings.theme === "dark" ? "light" : "dark";
+  applyTheme(settings.theme);
+  persist();
+};
+
+/* ── name pattern ──────────────────────────────────────────────── */
+
 const SAMPLE = {
   bank: "RiyadBank", sender: "TabeebArabia", receiver: "PioneerMetalCorners",
   amount: "200640.50", amount_net: "200632.45", currency: "SAR", invoice: "7260019",
   ref: "946702450951BNBD", date: "2026-09-02", receiver_bank: "SaudiNationalBank",
   orig: "RV INV 7260019",
 };
+
 function updateExample() {
   const name = $("template").value.replace(/\{(\w+)\}/g, (_, k) => SAMPLE[k] ?? "");
   $("example").textContent = name.replace(/_{2,}/g, "_").replace(/^[_\-.]+|[_\-.]+$/g, "") + ".pdf";
   document.querySelectorAll(".preset").forEach((p) =>
     p.classList.toggle("active", p.dataset.tpl === $("template").value));
-  saveSettings();
 }
+
 document.querySelectorAll(".preset").forEach((preset) => {
-  preset.onclick = () => { $("template").value = preset.dataset.tpl; updateExample(); rebuildNames(); };
+  preset.onclick = () => {
+    $("template").value = preset.dataset.tpl;
+    updateExample(); persist(); rebuildNames();
+    animate(preset, { scale: [0.97, 1] }, { duration: 0.22 });
+  };
 });
 document.querySelectorAll(".token").forEach((btn) => {
-  btn.onclick = () => { $("template").value += btn.dataset.token; updateExample(); rebuildNames(); };
+  btn.onclick = () => { $("template").value += btn.dataset.token; updateExample(); persist(); rebuildNames(); };
 });
 $("template").oninput = updateExample;
-$("template").onchange = rebuildNames;
-$("advBtn").onclick = () => $("advanced").classList.toggle("hidden");
-$("stripLegal").onchange = $("invFromName").onchange = () => { saveSettings(); rebuildNames(); };
-$("useOcr").onchange = $("ocrLangs").onchange = $("recursive").onchange = saveSettings;
+$("template").onchange = () => { persist(); rebuildNames(); };
+$("advBtn").onclick = () => {
+  const panel = $("advanced");
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) animate(panel, { opacity: [0, 1], y: [-6, 0] }, { duration: 0.25 });
+};
+["stripLegal", "invFromName", "useOcr", "autoLearn", "recursive", "quality", "ocrLangs"]
+  .forEach((id) => ($(id).onchange = () => { persist(); if (id !== "recursive") rebuildNames(); }));
 
-function rebuildNames() {
-  const o = options();
-  for (const row of rows) {
-    if (!row.rawFields) continue;
-    row.fields = { ...row.rawFields };
-    applyAliasesTo(row.fields);
-    row.proposed = buildName(row.fields, o.template, row.name,
-                             o.strip_legal_suffix, o.invoice_from_filename);
-  }
-  render();
-}
+/* ── folder ────────────────────────────────────────────────────── */
 
-function applyAliasesTo(fields) {
-  const lookup = {};
-  for (const [k, v] of Object.entries(aliases.receiver || {})) lookup[aliasKey(k)] = v;
-  const clean = lookup[aliasKey(fields.receiver_name)];
-  if (clean) { fields.receiver_name = clean; fields.receiver_name_en = clean; }
-}
+if (!HAS_FS) { $("noFs").hidden = false; $("pickBtn").disabled = true; }
 
-/* ── folder access ────────────────────────────────────── */
-if (!HAS_FS) {
-  $("noFs").hidden = false;
-  $("pickBtn").disabled = true;
-}
-
-$("pickBtn").onclick = async () => {
+async function pickFolder() {
   try {
     dirHandle = await window.showDirectoryPicker({ mode: "readwrite", id: "receipts" });
-  } catch { return; }                                    // user cancelled
-  const permission = await dirHandle.requestPermission({ mode: "readwrite" });
-  if (permission !== "granted") return toast("Permission to change files was not granted.");
+  } catch { return; }
+  if (await dirHandle.requestPermission({ mode: "readwrite" }) !== "granted")
+    return toast("Permission to change files was not granted.", "bad");
+  $("pickState").hidden = true;
+  $("folderState").hidden = false;
   $("folderName").textContent = dirHandle.name;
-  $("folderRow").hidden = false;
+  animate($("folderState"), { opacity: [0, 1], y: [-6, 0] }, { duration: 0.3 });
   scan();
-};
+}
+$("pickBtn").onclick = pickFolder;
+$("changeBtn").onclick = pickFolder;
 $("rescanBtn").onclick = () => dirHandle && scan();
 
 async function* walk(handle, prefix = "", recursive = false) {
@@ -135,134 +142,312 @@ async function* walk(handle, prefix = "", recursive = false) {
   }
 }
 
-/* ── scan ─────────────────────────────────────────────── */
+/* ── reading ───────────────────────────────────────────────────── */
+
+/** Read one file, escalating to a slower, more careful pass when the first one
+    misses something. Quality "auto" is what makes a poor scan still come out right. */
+async function readWithRetry(row, o, onStatus) {
+  const ladder = o.quality === "auto" ? ["balanced", "sharp"] : [o.quality];
+  let best = null;
+
+  for (const profile of ladder) {
+    const file = await row.handle.getFile();
+    const result = await readPdf(await file.arrayBuffer(),
+      { allowOcr: o.useOcr, langs: o.ocrLangs, profile, onStatus });
+    const fields = parseText(result.text, names);
+    const score = 3 - fields.missing.length + (result.confidence ?? 0) / 200;
+    if (!best || score > best.score) best = { ...result, fields, score, profile };
+    if (!fields.missing.length && (result.confidence ?? 100) >= 75) break;
+    if (result.engine !== "ocr") break;             // a text layer will not improve
+  }
+  return best;
+}
+
+/** Fill in from memory: the account number is the anchor, the printed name is not. */
+async function applyMemory(fields) {
+  const known = await memory.lookupAccount(fields.receiver_account);
+  if (known?.name) {
+    const printed = aliasKey(fields.receiver_name || "");
+    if (!printed || aliasKey(known.name) !== printed) {
+      fields.receiver_name = known.name;
+      fields.receiver_name_en = known.name;
+      fields.from_memory = true;
+      fields.missing = fields.missing.filter((m) => m !== "receiver_name");
+    }
+    // count the sighting either way, so the list shows which accounts are common
+    await memory.rememberAccount(fields.receiver_account, known.name, {});
+  }
+  return fields;
+}
+
+async function learnFrom(fields) {
+  if (!settings.autoLearn) return;
+  const name = fields.receiver_name_en || fields.receiver_name;
+  const trustworthy = fields.receiver_account &&
+    (fields.receiver_account_valid !== false) &&   // never learn from a mis-read IBAN
+    name && name.length > 3 && !fields.from_memory;
+  if (trustworthy) {
+    await memory.rememberAccount(fields.receiver_account, name, { bank: fields.receiver_bank || "" });
+  }
+}
+
 async function scan() {
   const o = options();
   cancelled = false;
   rows = [];
+  names = await memory.nameBook();
+
   for await (const file of walk(dirHandle, "", o.recursive)) {
     rows.push({ ...file, status: "pending", proposed: "", fields: {}, rawFields: null,
-                engine: "", notes: "" });
-    if (rows.length >= 500) break;
+                engine: "", notes: "", confidence: null });
+    if (rows.length >= 800) break;
   }
-  if (!rows.length) return toast("No PDF files in that folder.");
+  $("fileCount").textContent = `${rows.length} PDF${rows.length === 1 ? "" : "s"}`;
+  if (!rows.length) { toast("No PDF files in that folder."); return; }
 
-  rows.sort((a, b) => a.relative.localeCompare(b.relative));
+  rows.sort((a, b) => a.relative.localeCompare(b.relative, undefined, { numeric: true }));
   $("results").hidden = false;
-  $("progress").classList.remove("hidden");
-  $("applyBtn").disabled = true;
+  $("progress").hidden = false;
+  setProgress(0, rows.length, "");
   render();
 
   let done = 0;
   for (const row of rows) {
-    if (cancelled) { row.status = "cancelled"; continue; }
+    if (cancelled) { row.status = "cancelled"; done++; continue; }
     setProgress(done, rows.length, row.name);
     try {
-      const file = await row.handle.getFile();
-      const buffer = await file.arrayBuffer();
-      const { text, engine, note } = await readPdf(buffer, {
-        allowOcr: o.ocr, langs: o.langs,
-        onStatus: (msg) => setProgress(done, rows.length, `${row.name} — ${msg}`),
-      });
-      const fields = parseText(text, aliases);
+      const result = await readWithRetry(row, o, (msg) => setProgress(done, rows.length, `${row.name} — ${msg}`));
+      const fields = await applyMemory(result.fields);
+      await learnFrom(fields);
+
       row.rawFields = { ...fields };
       row.fields = fields;
-      row.engine = engine;
-      row.notes = note || "";
-      row.proposed = buildName(fields, o.template, row.name,
-                               o.strip_legal_suffix, o.invoice_from_filename);
+      row.engine = result.engine + (result.profile && result.engine === "ocr" ? `·${result.profile}` : "");
+      row.confidence = result.confidence;
+      row.notes = result.note || "";
+      row.proposed = buildName(fields, o.template, row.name, o.stripLegal, o.invFromName);
       row.status = fields.missing.length ? "review" : "ready";
-      if (fields.missing.length)
-        row.notes = `${row.notes} Missing: ${fields.missing.join(", ")}.`.trim();
-    } catch (err) {
+      if (fields.missing.length) row.notes = `${row.notes} Missing: ${fields.missing.join(", ")}.`.trim();
+      else if ((result.confidence ?? 100) < 65) {
+        row.status = "review";
+        row.notes = `${row.notes} The scan was hard to read (${result.confidence}% sure).`.trim();
+      }
+    } catch (error) {
       row.status = "error";
-      row.notes = String(err.message || err);
+      row.notes = String(error?.message || error);
     }
     done++;
     setProgress(done, rows.length, "");
     render();
   }
-  $("progress").classList.add("hidden");
-  $("applyBtn").disabled = false;
+
+  markDuplicates();
+  $("progress").hidden = true;
   render();
+  renderMemory();
+  const ready = rows.filter((r) => r.status === "ready").length;
+  toast(`Read ${rows.length} file${rows.length === 1 ? "" : "s"} · ${ready} ready to rename`);
 }
 
-function setProgress(done, total, label) {
-  $("barFill").style.width = total ? `${Math.round((done / total) * 100)}%` : "0";
-  $("progressText").textContent = label
-    ? `Reading ${done + 1} of ${total} · ${label}`
-    : `Read ${done} of ${total}`;
+/** Same bank, company, amount and day twice = probably a double-filed payment. */
+function markDuplicates() {
+  const seen = new Map();
+  for (const row of rows) {
+    const key = duplicateKey(row.fields || {});
+    if (!key) continue;
+    if (seen.has(key)) { row.duplicateOf = seen.get(key); } else seen.set(key, row.relative);
+  }
 }
-$("cancelBtn").onclick = () => { cancelled = true; toast("Stopping after the current file…"); };
 
-/* ── table ────────────────────────────────────────────── */
+function setProgress(done, total, detail) {
+  const pct = total ? Math.round((done / total) * 100) : 0;
+  $("ringFill").style.strokeDashoffset = String(97.4 - (97.4 * pct) / 100);
+  $("ringText").textContent = pct + "%";
+  $("progressTitle").textContent = `Reading ${Math.min(done + 1, total)} of ${total}`;
+  $("progressDetail").textContent = detail;
+}
+$("cancelBtn").onclick = () => { cancelled = true; toast("Stopping after this file…"); };
+
+/* ── rendering ─────────────────────────────────────────────────── */
+
+function visibleRows() {
+  const q = search.trim().toLowerCase();
+  return rows.filter((r) => {
+    if (filter === "duplicate" && !r.duplicateOf) return false;
+    if (filter !== "all" && filter !== "duplicate" && r.status !== filter) return false;
+    if (!q) return true;
+    const f = r.fields || {};
+    return [r.relative, r.proposed, f.bank_name, f.receiver_name, f.amount, f.invoice_number]
+      .some((v) => String(v ?? "").toLowerCase().includes(q));
+  });
+}
+
 function render() {
-  const count = (status) => rows.filter((r) => r.status === status).length;
-  $("stats").innerHTML = `
-    <span class="stat"><b>${rows.length}</b>files</span>
-    <span class="stat ready"><b>${count("ready")}</b>ready</span>
-    <span class="stat review"><b>${count("review")}</b>need a look</span>
-    ${count("error") ? `<span class="stat error"><b>${count("error")}</b>failed</span>` : ""}`;
+  const count = (s) => rows.filter((r) => r.status === s).length;
+  const counts = { all: rows.length, ready: count("ready"), review: count("review"),
+                   duplicate: rows.filter((r) => r.duplicateOf).length, error: count("error") };
+  document.querySelectorAll(".filter").forEach((b) => {
+    b.querySelector("b").textContent = counts[b.dataset.filter] ?? 0;
+    b.classList.toggle("active", b.dataset.filter === filter);
+  });
 
   const body = $("table").tBodies[0];
   body.innerHTML = "";
-  rows.forEach((r, i) => {
+  const list = visibleRows();
+  $("emptyState").hidden = list.length > 0;
+
+  for (const r of list) {
+    const i = rows.indexOf(r);
     const f = r.fields || {};
     const chips = [
       f.bank_name && `<span class="chip"><b>${esc(f.bank_name)}</b></span>`,
       (f.receiver_name_en || f.receiver_name) &&
-        `<span class="chip">to <b>${esc(f.receiver_name_en || f.receiver_name)}</b></span>`,
+        `<span class="chip ${f.from_memory ? "learned" : ""}">to <b>${esc(f.receiver_name_en || f.receiver_name)}</b>${f.from_memory ? " · remembered" : ""}</span>`,
       f.amount && `<span class="chip"><b>${esc(f.amount)}</b> ${esc(f.currency || "")}</span>`,
       f.invoice_number && `<span class="chip">inv <b>${esc(f.invoice_number)}</b></span>`,
       f.transaction_date && `<span class="chip">${esc(f.transaction_date)}</span>`,
-      r.engine && `<span class="chip">${esc(r.engine)}</span>`,
+      f.receiver_account && `<span class="chip mono">${esc(f.receiver_account.slice(0, 6))}…${esc(f.receiver_account.slice(-4))}</span>`,
+      r.engine && `<span class="chip">${esc(r.engine)}${r.confidence != null && r.engine.startsWith("ocr") ? ` ${r.confidence}%` : ""}</span>`,
+      r.duplicateOf && `<span class="chip dup">possible duplicate of ${esc(r.duplicateOf)}</span>`,
     ].filter(Boolean).join("");
 
     const tr = document.createElement("tr");
+    tr.dataset.i = i;
     tr.innerHTML = `
       <td><input type="checkbox" class="pick" data-i="${i}"
-           ${r.status === "ready" ? "checked" : ""}
+           ${r.status === "ready" && !r.duplicateOf ? "checked" : ""}
            ${r.status === "ready" || r.status === "review" ? "" : "disabled"}></td>
       <td>
         ${r.status === "renamed"
           ? `<div class="done-name mono">${esc(r.relative)}</div>
-             <div class="old-name mono">${esc(r.previous || "")}</div>`
+             <div class="old-name mono">was ${esc(r.previous || "")}</div>`
           : `<div class="old-name mono">${esc(r.relative)}</div>
-             ${r.proposed
-               ? `<input class="new-name mono" type="text" data-i="${i}" value="${esc(r.proposed)}">`
-               : '<span class="muted small">— nothing readable —</span>'}`}
+             ${r.proposed ? `<div class="arrow">↓</div>
+               <input class="new-name mono" type="text" data-i="${i}" value="${esc(r.proposed)}">`
+             : '<span class="muted small">nothing readable</span>'}`}
       </td>
       <td><div class="chips">${chips || '<span class="muted small">no details found</span>'}</div></td>
       <td><span class="pill ${r.status}">${r.status}</span>
           ${r.notes ? `<span class="note">${esc(r.notes)}</span>` : ""}</td>
       <td><div class="row-links">
-        <button class="link view" data-i="${i}">view PDF</button>
-        ${(r.rawFields?.receiver_name) ? `<button class="link teach" data-i="${i}">teach name</button>` : ""}
+        <button class="link view" data-i="${i}">Open PDF</button>
+        ${r.rawFields?.receiver_name || r.fields?.receiver_account
+          ? `<button class="link teach" data-i="${i}">Fix name</button>` : ""}
       </div></td>`;
     body.appendChild(tr);
+  }
+
+  if (body.children.length) {
+    animate(body.children, { opacity: [0, 1], y: [6, 0] },
+            { delay: stagger(0.012), duration: 0.24, easing: [0.2, 0.8, 0.2, 1] });
+  }
+  updateActionBar();
+}
+
+function updateActionBar() {
+  const picked = document.querySelectorAll(".pick:checked").length;
+  const bar = $("actionBar");
+  $("selCount").textContent = `${picked} file${picked === 1 ? "" : "s"} selected`;
+  if (picked && bar.hidden) {
+    bar.hidden = false;
+    animate(bar, { opacity: [0, 1], y: [20, 0] }, { duration: 0.28, easing: [0.2, 0.8, 0.2, 1] });
+  } else if (!picked && !bar.hidden) {
+    finished(animate(bar, { opacity: 0, y: 16 }, { duration: 0.18 })).then(() => (bar.hidden = true));
+  }
+  document.querySelectorAll("#table tbody tr").forEach((tr) => {
+    tr.classList.toggle("picked", tr.querySelector(".pick")?.checked === true);
   });
 }
 
-$("selectAll").onchange = (e) =>
+$("selectAll").onchange = (e) => {
   document.querySelectorAll(".pick:not(:disabled)").forEach((c) => (c.checked = e.target.checked));
+  updateActionBar();
+};
+$("clearSel").onclick = () => {
+  document.querySelectorAll(".pick").forEach((c) => (c.checked = false));
+  $("selectAll").checked = false;
+  updateActionBar();
+};
+document.addEventListener("change", (e) => { if (e.target.classList.contains("pick")) updateActionBar(); });
+
+document.querySelectorAll(".filter").forEach((b) => {
+  b.onclick = () => { filter = b.dataset.filter; render(); };
+});
+$("search").oninput = (e) => { search = e.target.value; render(); };
+
+function rebuildNames() {
+  const o = options();
+  for (const row of rows) {
+    if (!row.rawFields || row.status === "renamed") continue;
+    row.fields = { ...row.rawFields };
+    row.proposed = buildName(row.fields, o.template, row.name, o.stripLegal, o.invFromName);
+  }
+  render();
+}
+
+/* ── row actions ───────────────────────────────────────────────── */
 
 document.addEventListener("click", async (e) => {
-  const i = +e.target.dataset?.i;
+  const i = Number(e.target.dataset?.i);
   if (e.target.classList.contains("view")) {
     const file = await rows[i].handle.getFile();
     const url = URL.createObjectURL(file);
     window.open(url, "_blank");
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
-  if (e.target.classList.contains("teach")) {
-    const raw = rows[i].rawFields.receiver_name;
-    $("teachRaw").value = raw;
-    $("teachClean").value = rows[i].fields.receiver_name || raw;
-    $("teachDialog").showModal();
-  }
+  if (e.target.classList.contains("teach")) openTeach(rows[i]);
 });
 
-/* ── rename ───────────────────────────────────────────── */
+function openTeach(row) {
+  teachRow = row;
+  const raw = row.rawFields?.receiver_name || "";
+  const account = row.fields?.receiver_account || "";
+  $("teachRaw").value = raw || "(nothing readable)";
+  $("teachClean").value = row.fields?.receiver_name || raw;
+  $("teachHint").textContent = raw
+    ? "The receipt spells it like this. Type the name you want in file names."
+    : "The name could not be read. Type the company name for this account.";
+  $("teachAccountRow").hidden = !account;
+  $("teachAccountNo").textContent = account;
+  $("teachDialog").showModal();
+  $("teachClean").focus();
+}
+
+$("teachCancel").onclick = (e) => { e.preventDefault(); $("teachDialog").close(); };
+$("teachSave").onclick = async (e) => {
+  e.preventDefault();
+  const clean = $("teachClean").value.trim();
+  if (!clean || !teachRow) return;
+  const raw = teachRow.rawFields?.receiver_name || "";
+  const account = teachRow.fields?.receiver_account || "";
+  if (raw) await memory.rememberName(raw, clean);
+  if (account && $("teachAccount").checked)
+    await memory.rememberAccount(account, clean, { confirmed: true });
+  $("teachDialog").close();
+
+  names = await memory.nameBook();
+  const o = options();
+  for (const row of rows) {
+    if (!row.rawFields || row.status === "renamed") continue;
+    const sameName = raw && aliasKey(row.rawFields.receiver_name) === aliasKey(raw);
+    const sameAccount = account && row.fields.receiver_account === account;
+    if (!sameName && !sameAccount) continue;
+    row.fields.receiver_name = clean;
+    row.fields.receiver_name_en = clean;
+    row.fields.from_memory = true;
+    row.rawFields.receiver_name = row.rawFields.receiver_name || clean;
+    row.fields.missing = (row.fields.missing || []).filter((m) => m !== "receiver_name");
+    row.status = row.fields.missing.length ? "review" : "ready";
+    row.proposed = buildName(row.fields, o.template, row.name, o.stripLegal, o.invFromName);
+  }
+  markDuplicates();
+  render();
+  renderMemory();
+  toast(`Saved — “${clean}” will be used from now on.`);
+};
+
+/* ── renaming ──────────────────────────────────────────────────── */
+
 $("applyBtn").onclick = async () => {
   const edits = {};
   document.querySelectorAll(".new-name").forEach((input) => (edits[+input.dataset.i] = input.value));
@@ -271,8 +456,8 @@ $("applyBtn").onclick = async () => {
   if (!confirm(`Rename ${picks.length} file(s) in “${dirHandle.name}”?`)) return;
 
   const existing = new Set(rows.map((r) => r.name.toLowerCase()));
+  const batch = [];
   let renamed = 0, skipped = 0, failed = 0;
-  undoStack = [];
 
   for (const i of picks) {
     const row = rows[i];
@@ -282,30 +467,38 @@ $("applyBtn").onclick = async () => {
     if (target === row.name) { skipped++; continue; }
 
     let unique = target, n = 2;
-    while (existing.has(unique.toLowerCase())) {
+    while (existing.has(unique.toLowerCase()))
       unique = target.replace(/\.pdf$/i, "") + `_${n++}.pdf`;
-    }
+
     try {
       await renameFile(row, unique);
       existing.delete(row.name.toLowerCase());
       existing.add(unique.toLowerCase());
-      undoStack.push({ row, from: unique, to: row.name });
+      batch.push({ index: i, from: row.name, to: unique, path: row.relative });
       row.previous = row.name;
       row.relative = row.relative.replace(/[^/]+$/, unique);
       row.name = unique;
       row.proposed = unique;
       row.status = "renamed";
       renamed++;
-    } catch (err) {
+    } catch (error) {
       failed++;
       row.status = "error";
-      row.notes = String(err.message || err);
+      row.notes = String(error?.message || error);
     }
   }
+
+  if (batch.length) {
+    lastBatch = batch;
+    await memory.saveBatch(batch, dirHandle.name);
+    $("undoBtn").hidden = false;
+  }
   render();
-  $("undoBtn").hidden = !undoStack.length;
-  toast(`Renamed ${renamed} · skipped ${skipped} · failed ${failed}`, 5000);
+  toast(`Renamed ${renamed}${skipped ? ` · skipped ${skipped}` : ""}${failed ? ` · failed ${failed}` : ""}`,
+        failed ? "bad" : "");
 };
+
+let lastBatch = null;
 
 async function renameFile(row, newName) {
   if (row.handle.move) return row.handle.move(newName);   // Chrome / Edge
@@ -319,90 +512,100 @@ async function renameFile(row, newName) {
 }
 
 $("undoBtn").onclick = async () => {
-  if (!undoStack.length) return;
+  if (!lastBatch?.length) return;
   let restored = 0;
-  for (const entry of [...undoStack].reverse()) {
+  for (const entry of [...lastBatch].reverse()) {
+    const row = rows[entry.index];
+    if (!row) continue;
     try {
-      await renameFile(entry.row, entry.to);
-      entry.row.relative = entry.row.relative.replace(/[^/]+$/, entry.to);
-      entry.row.name = entry.to;
-      entry.row.previous = "";
-      entry.row.status = entry.row.rawFields?.missing?.length ? "review" : "ready";
+      await renameFile(row, entry.from);
+      row.relative = row.relative.replace(/[^/]+$/, entry.from);
+      row.name = entry.from;
+      row.previous = "";
+      row.proposed = entry.to;
+      row.status = row.fields?.missing?.length ? "review" : "ready";
       restored++;
     } catch { /* keep going */ }
   }
-  undoStack = [];
+  lastBatch = null;
   $("undoBtn").hidden = true;
-  rebuildNames();
-  toast(`Restored ${restored} original name(s).`);
+  render();
+  toast(`Restored ${restored} original name${restored === 1 ? "" : "s"}.`);
 };
 
-/* ── learned names ────────────────────────────────────── */
-$("teachCancel").onclick = (e) => { e.preventDefault(); $("teachDialog").close(); };
-$("teachSave").onclick = (e) => {
-  e.preventDefault();
-  const raw = $("teachRaw").value, clean = $("teachClean").value.trim();
-  if (!raw || !clean) return;
-  aliases.receiver[raw] = clean;
-  saveAliases();
-  $("teachDialog").close();
-  rebuildNames();
-  renderAliases();
-  toast(`Saved — “${clean}” will be used from now on.`);
-};
+/* ── memory panels ─────────────────────────────────────────────── */
 
-function renderAliases() {
-  const list = $("aliasList");
-  const entries = Object.entries(aliases.receiver || {});
-  list.innerHTML = "";
-  if (!entries.length) {
-    list.innerHTML = '<li class="muted small">Nothing taught yet — use “teach name” on any row.</li>';
-    return;
-  }
-  for (const [raw, clean] of entries) {
+async function renderMemory() {
+  const accounts = (await memory.listAccounts()).sort((a, b) => b.seen - a.seen);
+  const accountList = $("accountList");
+  accountList.innerHTML = accounts.length ? "" :
+    '<li class="muted small">No accounts learned yet — read a folder and they appear here.</li>';
+  for (const account of accounts.slice(0, 50)) {
     const li = document.createElement("li");
-    li.innerHTML = `<span class="grow"><code>${esc(raw)}</code> → <strong>${esc(clean)}</strong></span>`;
+    li.innerHTML = `<span class="grow"><strong>${esc(account.name)}</strong>
+      <span class="sub mono">${esc(account.key)} · seen ${account.seen}×${account.confirmed ? " · confirmed" : ""}</span></span>`;
+    const del = document.createElement("button");
+    del.className = "link"; del.textContent = "forget";
+    del.onclick = async () => { await memory.forgetAccount(account.key); renderMemory(); };
+    li.appendChild(del);
+    accountList.appendChild(li);
+  }
+
+  const nameRows = await memory.listNames();
+  const nameList = $("nameList");
+  nameList.innerHTML = nameRows.length ? "" :
+    '<li class="muted small">Nothing corrected yet — use “Fix name” on any row.</li>';
+  for (const row of nameRows) {
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="grow"><code>${esc(row.key)}</code> → <strong>${esc(row.clean)}</strong></span>`;
     const del = document.createElement("button");
     del.className = "link"; del.textContent = "remove";
-    del.onclick = () => { delete aliases.receiver[raw]; saveAliases(); rebuildNames(); renderAliases(); };
+    del.onclick = async () => { await memory.forgetName(row.key); names = await memory.nameBook(); renderMemory(); };
     li.appendChild(del);
-    list.appendChild(li);
+    nameList.appendChild(li);
   }
+
+  const total = accounts.length + nameRows.length;
+  const chip = $("memoryChip");
+  chip.hidden = !total;
+  chip.textContent = `${accounts.length} account${accounts.length === 1 ? "" : "s"} · ${nameRows.length} name${nameRows.length === 1 ? "" : "s"} remembered`;
 }
 
-$("aliasExport").onclick = () => {
-  const blob = new Blob([JSON.stringify(aliases, null, 2)], { type: "application/json" });
+$("memExport").onclick = async () => {
+  const data = await memory.exportAll();
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "receipt-renamer-names.json";
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+  a.download = "receipt-renamer-memory.json";
   a.click();
   URL.revokeObjectURL(a.href);
 };
-$("aliasImport").onclick = () => $("aliasFile").click();
-$("aliasFile").onchange = async (e) => {
+$("memImport").onclick = () => $("memFile").click();
+$("memFile").onchange = async (e) => {
   const file = e.target.files[0];
   if (!file) return;
   try {
-    const incoming = JSON.parse(await file.text());
-    for (const kind of ["receiver", "sender", "bank"])
-      Object.assign(aliases[kind], incoming[kind] || {});
-    saveAliases(); rebuildNames(); renderAliases();
-    toast("Names imported.");
-  } catch { toast("That file is not a saved name list."); }
+    const count = await memory.importAll(JSON.parse(await file.text()));
+    names = await memory.nameBook();
+    renderMemory();
+    toast(`Imported ${count} remembered item${count === 1 ? "" : "s"}.`);
+  } catch { toast("That file is not a memory export.", "bad"); }
   e.target.value = "";
 };
 
-/* ── csv ──────────────────────────────────────────────── */
+/* ── csv ───────────────────────────────────────────────────────── */
+
 $("csvBtn").onclick = () => {
-  const head = ["current_name", "new_name", "bank", "sender", "receiver", "amount", "currency",
-                "invoice", "reference", "date", "read_by", "status", "notes"];
+  const head = ["current_name", "new_name", "bank", "sender", "receiver", "receiver_account",
+                "amount", "amount_net", "currency", "invoice", "reference", "date",
+                "read_by", "confidence", "status", "duplicate_of", "notes"];
   const cell = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const lines = [head.join(",")];
   for (const r of rows) {
     const f = r.fields || {};
     lines.push([r.relative, r.proposed, f.bank_name, f.sender_name_en || f.sender_name,
-      f.receiver_name_en || f.receiver_name, f.amount, f.currency, f.invoice_number,
-      f.reference_number, f.transaction_date, r.engine, r.status, r.notes].map(cell).join(","));
+      f.receiver_name_en || f.receiver_name, f.receiver_account, f.amount, f.amount_net,
+      f.currency, f.invoice_number, f.reference_number, f.transaction_date, r.engine,
+      r.confidence, r.status, r.duplicateOf, r.notes].map(cell).join(","));
   }
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob(["﻿" + lines.join("\n")], { type: "text/csv" }));
@@ -411,8 +614,43 @@ $("csvBtn").onclick = () => {
   URL.revokeObjectURL(a.href);
 };
 
-window.addEventListener("beforeunload", () => terminateOcr());
+/* ── keyboard ──────────────────────────────────────────────────── */
 
-restoreSettings();
-updateExample();
-renderAliases();
+document.addEventListener("keydown", (e) => {
+  if (e.target.matches("input, textarea, select")) return;
+  if (e.key === "/") { e.preventDefault(); $("search").focus(); }
+  if (e.key === "a" && rows.length) { $("selectAll").checked = !$("selectAll").checked;
+                                      $("selectAll").onchange({ target: $("selectAll") }); }
+  if (e.key === "Enter" && !$("actionBar").hidden) $("applyBtn").click();
+});
+
+window.addEventListener("beforeunload", () => shutdownReaders());
+
+// Offline support: after the first visit the page (and the OCR engine) work
+// without a connection, and Chrome/Edge offer to install it as an app.
+if ("serviceWorker" in navigator && location.protocol !== "file:") {
+  window.addEventListener("load", () =>
+    navigator.serviceWorker.register("/sw.js").catch(() => {}));
+}
+
+/* ── boot ──────────────────────────────────────────────────────── */
+
+(async function start() {
+  await memory.migrateFromLocalStorage();
+  settings = await memory.loadSettings(DEFAULTS);
+  applyTheme(settings.theme);
+  $("template").value = settings.template;
+  for (const id of ["recursive", "stripLegal", "invFromName", "useOcr", "autoLearn"])
+    $(id).checked = settings[id];
+  $("quality").value = settings.quality;
+  $("ocrLangs").value = settings.ocrLangs;
+  names = await memory.nameBook();
+  updateExample();
+  renderMemory();
+
+  const batches = await memory.listBatches();
+  if (batches.length) $("undoBtn").hidden = true;      // undo only within a session
+
+  animate(document.querySelectorAll(".reveal"), { opacity: [0, 1], y: [10, 0] },
+          { delay: stagger(0.06), duration: 0.4, easing: [0.2, 0.8, 0.2, 1] });
+})();

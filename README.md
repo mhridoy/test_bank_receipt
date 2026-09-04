@@ -14,11 +14,40 @@ The reading happens inside the browser tab:
 
 | PDF type | How it is read |
 |---|---|
-| Digital (text inside the PDF) | pdf.js text layer — instant |
-| Scanned / image-only | tesseract.js OCR — downloaded once (~15 MB), then cached offline |
+| Digital (text inside the PDF) | pdf.js text layer — instant, exact |
+| Scanned / image-only | rendered up to 3800 px, cleaned up, then tesseract.js OCR |
 
-The bank, beneficiary, amount, invoice number and date are then pulled out with
-plain rules (`static/engine.js`). No AI service, no API key, no server.
+Scans go through a real pipeline, not a plain OCR call:
+
+1. **Rendered in a Web Worker** — a background tab throttles canvas work to a
+   standstill, which used to stall the whole run.
+2. **Cleaned up** — greyscale, 2–98 % contrast stretch, and for photographed
+   receipts (uneven light) a Sauvola *local* threshold instead of a global one.
+   The "Sharp" profile also runs an unsharp mask for thin, anti-aliased text.
+3. **Lines rebuilt from word boxes** — Tesseract's plain text output glues words
+   together on tight layouts (`CORNERSCOMPANYBeneficiaryAccount`); the app measures
+   the gaps between word boxes instead.
+4. **Retried harder when unsure** — quality *Auto* reads with the balanced profile,
+   and if a field is missing or confidence is low it re-reads with the sharp one
+   and keeps whichever result is better.
+
+The bank, beneficiary, amount, account number, invoice number and date are then
+pulled out with plain rules (`static/engine.js`). No AI service, no API key, no server.
+
+## It learns
+
+- **Account numbers.** An IBAN never changes spelling, a company name does. When a
+  receipt is read cleanly, the app stores *account number → company*. Every later
+  receipt to that account is named the same way, even if the OCR mangles the name.
+  IBANs are checked with the ISO 13616 checksum first, so a mis-read number is
+  never learned.
+- **Your corrections.** "Fix name" on any row teaches both the spelling and the
+  account behind it.
+- **Duplicates.** Same bank, company, amount and day twice is flagged and left
+  unticked, so a double-filed payment does not get renamed into place silently.
+
+Everything it learns lives in this browser (IndexedDB) and can be exported as one
+JSON file for the other office PCs.
 
 ---
 
@@ -30,6 +59,12 @@ plain rules (`static/engine.js`). No AI service, no API key, no server.
 3. Check the proposed names. Anything uncertain is marked **review** and is left
    unticked; every name is editable in the table.
 4. **Rename selected.** **Undo rename** puts the old names back.
+
+Filter by *Ready / Needs a look / Duplicates / Failed*, search across every field,
+press `/` to search, `a` to select all, `Enter` to rename.
+
+After the first visit the page works offline and Chrome/Edge offer to install it
+as an app (it is a PWA; the OCR data is cached too).
 
 **Export CSV** gives a report of every file — bank, sender, receiver, amount,
 invoice, reference, date — for accounts reconciliation.

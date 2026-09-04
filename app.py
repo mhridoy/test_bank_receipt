@@ -58,6 +58,15 @@ def sample_file(name: str):
     return send_from_directory(SAMPLES, name)
 
 
+@app.get("/sw.js")
+def service_worker():
+    """Served from the root so it can control the whole origin."""
+    response = send_from_directory(app.static_folder, "sw.js")
+    response.headers["Service-Worker-Allowed"] = "/"
+    response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.get("/healthz")
 def healthz():
     return jsonify({"ok": True})

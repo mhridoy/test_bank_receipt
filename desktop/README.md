@@ -12,6 +12,10 @@ This folder keeps the original Python implementation of the same rules
 `static/engine.js` in the repo root is a port of `parse.py` + `naming.py`.
 **When you add a bank rule, add it in both places.**
 
+The browser version has since gained things this one does not have: account-number
+learning, IBAN checksum validation, duplicate detection and the adaptive OCR
+pipeline. Treat the browser app as the reference implementation.
+
 Run the CLI:
 
 ```bash

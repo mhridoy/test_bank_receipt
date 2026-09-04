@@ -63,6 +63,42 @@ const REFERENCE_RULES = [
 
 const FEE_WORDS = /fee|fees|comission|commission|charge|charges|vat|tax|رسوم|عمولة/i;
 
+/* Account numbers are the strongest identifier on a receipt: the beneficiary's
+   name may be spelled three different ways, but the IBAN never changes. */
+
+const IBAN_TOKEN = /\b([A-Z]{2}\d{12,30})\b/g;
+const BENEFICIARY_CONTEXT = /beneficiary|payee|creditto|المستفيد|\bTO:/i;
+const OWN_ACCOUNT_CONTEXT = /iban|accountnumber|accountno|fromaccount|debitaccount|رقمالحساب|الآيبان/i;
+
+/** OCR mixes up letters and digits inside numbers - repair them in numeric fields. */
+export function fixDigits(value) {
+  return String(value || "")
+    .replace(/[Oo]/g, "0").replace(/[lI|]/g, "1")
+    .replace(/[Ss]/g, "5").replace(/[Bb]/g, "8").replace(/[Zz]/g, "2");
+}
+
+/** IBAN check digits (ISO 13616 mod-97). Catches an OCR slip in an account
+    number before it is learned as a company's identity. */
+export function validIban(iban) {
+  const value = String(iban || "").toUpperCase().replace(/\s+/g, "");
+  if (!/^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/.test(value)) return false;
+  const rearranged = value.slice(4) + value.slice(0, 4);
+  let remainder = 0;
+  for (const char of rearranged) {
+    const digits = char >= "A" && char <= "Z" ? String(char.charCodeAt(0) - 55) : char;
+    for (const digit of digits) remainder = (remainder * 10 + Number(digit)) % 97;
+  }
+  return remainder === 1;
+}
+
+function normaliseAccount(value) {
+  if (!value) return "";
+  const cleaned = String(value).replace(/\s+/g, "").toUpperCase();
+  const iban = cleaned.match(/^([A-Z]{2})(.{10,30})$/);
+  if (iban) return iban[1] + fixDigits(iban[2]).replace(/[^0-9]/g, "");
+  return fixDigits(cleaned).replace(/[^0-9]/g, "");
+}
+
 const LABEL_WORDS = new Set(["account type", "account number", "account name", "current account",
   "branch", "amount", "date", "description", "currency", "narration", "cheque no",
   "transaction details", "iban", "detail", "processing date", "status", "beneficiary"]);
@@ -154,6 +190,52 @@ function findDate(v) {
   return "";
 }
 
+/** Sort the IBANs on the page into "ours" and "the beneficiary's".
+
+    Receipts print both, so position and the words around each one decide: an IBAN
+    introduced by "Beneficiary"/"TO:" belongs to the payee, one introduced by
+    "IBAN"/"Account Number" is the account the money left. When only labels for the
+    sender are found and a second IBAN exists further down (inside the narration),
+    that later one is the beneficiary. */
+function findAccounts(v) {
+  const flat = v.flat;
+  const found = [];
+  for (const match of flat.matchAll(IBAN_TOKEN)) {
+    const value = match[1];
+    const before = flat.slice(Math.max(0, match.index - 45), match.index);
+    found.push({
+      value,
+      valid: validIban(value),
+      beneficiary: BENEFICIARY_CONTEXT.test(before),
+      own: OWN_ACCOUNT_CONTEXT.test(before),
+      index: match.index,
+    });
+  }
+
+  const preferred = found.filter((a) => a.valid);
+  const pool = preferred.length ? preferred : found;
+
+  let receiver = pool.find((a) => a.beneficiary && !a.own);
+  let sender = pool.find((a) => a.own && !a.beneficiary);
+  if (!receiver) receiver = pool.filter((a) => a !== sender).pop();   // narration comes last
+  if (!sender) sender = pool.find((a) => a !== receiver);
+
+  const plainAccount = firstMatch([
+    ["line", /\bAccount\s*(?:No\.?|Number)?\s*[:\-]?\s*(\d{9,20})\b/i],
+    ["line", /(?:رقم\s*الحساب)\s*[:\-]?\s*(\d{9,20})/],
+  ], v);
+
+  const beneficiaryPlain = firstMatch([
+    ["flat", /Beneficiary\s*Account:?(\d{9,24})\b/i],
+  ], v);
+
+  return {
+    receiver_account: normaliseAccount(receiver?.value || beneficiaryPlain || ""),
+    receiver_account_valid: receiver ? receiver.valid : null,
+    sender_account: normaliseAccount(sender?.value || plainAccount || ""),
+  };
+}
+
 export function aliasKey(text) {
   return String(text || "").replace(/[^0-9A-Za-z؀-ۿ]/g, "").toUpperCase();
 }
@@ -186,6 +268,7 @@ export function parseText(text, aliases = {}) {
     transaction_date: findDate(v),
     ...findAmounts(v),
   };
+  Object.assign(fields, findAccounts(v));
   fields.sender_name_en = fields.sender_name;
   fields.receiver_name_en = fields.receiver_name;
   applyAliases(fields, aliases);
@@ -194,6 +277,15 @@ export function parseText(text, aliases = {}) {
   fields.confidence = missing.length === 0 ? "high" : (missing.length === 1 ? "medium" : "low");
   fields.missing = missing;
   return fields;
+}
+
+/** Two receipts for the same bank, beneficiary, amount and day are almost
+    certainly the same payment filed twice - worth flagging before renaming. */
+export function duplicateKey(fields) {
+  const receiver = aliasKey(fields.receiver_name_en || fields.receiver_name || "");
+  if (!fields.amount || !receiver) return "";
+  return [canonicalBank(fields.bank_name || ""), receiver, fields.amount,
+          (fields.transaction_date || "").slice(0, 10)].join("|");
 }
 
 /* ── naming ─────────────────────────────────────────────────────────── */
