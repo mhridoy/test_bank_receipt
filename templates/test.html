@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>engine test</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+</head>
+<body style="padding:20px">
+<h1>Browser engine test</h1>
+<pre id="out" class="mono" style="white-space:pre-wrap"></pre>
+<script type="module">
+import { parseText, buildName } from "/static/engine.js";
+import { readPdf } from "/static/reader.js";
+const out = document.getElementById("out");
+const log = (m) => { out.textContent += m + "\n"; };
+const samples = {{ samples|tojson }};
+const TPL = "{bank}_{receiver}_{amount}{currency}_{invoice}";
+window.RESULTS = [];
+for (const name of samples) {
+  const t0 = performance.now();
+  try {
+    const buffer = await (await fetch("/samples/" + encodeURIComponent(name))).arrayBuffer();
+    const { text, engine } = await readPdf(buffer, { allowOcr: true, langs: "eng",
+                                                     onStatus: (s) => log("   … " + s) });
+    const fields = parseText(text, {});
+    const proposed = buildName(fields, TPL, name);
+    const line = `${name}\n   ${engine} ${((performance.now()-t0)/1000).toFixed(1)}s -> ${proposed}`;
+    log(line);
+    window.RESULTS.push({ name, engine, proposed, fields });
+  } catch (err) { log(`${name}\n   ERROR ${err}`); window.RESULTS.push({ name, error: String(err) }); }
+}
+log("DONE");
+window.TEST_DONE = true;
+</script>
+</body></html>

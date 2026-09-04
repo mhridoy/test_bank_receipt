@@ -1,6 +1,6 @@
 @echo off
-REM Bank Receipt Renamer - Windows launcher.
-REM First run creates a private virtual environment and installs dependencies.
+REM Serves the Receipt Renamer page locally. You only need this for an offline
+REM copy - the hosted page does exactly the same thing in the browser.
 setlocal
 cd /d "%~dp0"
 
@@ -25,5 +25,5 @@ goto :eof
 
 :fail
 echo.
-echo Dependency install failed. Check your internet connection or proxy settings.
+echo Install failed. Check your internet connection or proxy settings.
 pause

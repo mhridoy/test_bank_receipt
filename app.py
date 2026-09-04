@@ -1,270 +1,66 @@
-"""Bank Receipt Renamer - local web app.
+"""Serves the Receipt Renamer page.
 
-Runs entirely on the user's own machine (Windows / macOS / Linux): reads a local
-folder of bank-receipt PDFs and renames them to a consistent, searchable pattern.
+The app is entirely client-side: reading the PDFs, the OCR, the field rules and
+the renaming all happen in the browser, against a folder the user picks. This
+server only hands over the HTML, CSS and JS - it never sees a receipt.
 
-No API key, no account, no upload - digital PDFs are read from their text layer
-and scanned ones through offline OCR (RapidOCR), then parsed with plain rules.
+Run it locally (`python app.py`) for an offline copy, or deploy it anywhere that
+serves static files over HTTPS (the File System Access API needs a secure origin).
 """
 from __future__ import annotations
 
-import hmac
 import os
-import secrets
 import socket
 import threading
 import webbrowser
+
 from pathlib import Path
 
-from flask import (Flask, jsonify, redirect, render_template, request,
-                   send_file, session, url_for)
+from flask import Flask, jsonify, render_template, send_from_directory
 
-from receipt_renamer import config, ocr, renamer, uploads
+TEMPLATE_PRESETS = {
+    "standard": "{bank}_{receiver}_{amount}{currency}_{invoice}",
+    "with_date": "{date}_{bank}_{receiver}_{amount}{currency}_{invoice}",
+    "audit": "{date}_{bank}_{sender}_TO_{receiver}_{amount}{currency}_{invoice}",
+    "ref_based": "{bank}_{receiver}_{amount}{currency}_{ref}",
+}
 
 app = Flask(__name__)
-app.config["JSON_AS_ASCII"] = False
-app.config["MAX_CONTENT_LENGTH"] = (uploads.MAX_FILES * uploads.MAX_FILE_MB + 32) * 1024 * 1024
-
-# CLOUD_MODE=1 when hosted (Render): no local folder access, upload/download only.
-CLOUD_MODE = os.environ.get("CLOUD_MODE") == "1"
-
-# Set APP_PASSWORD on a hosted instance so only the office can use it.
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "").strip()
-app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
-app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
-
-OPEN_PATHS = {"/login", "/healthz"}
+SAMPLES = Path(__file__).parent / "samples"
 
 
-@app.before_request
-def require_password():
-    if not APP_PASSWORD or request.path in OPEN_PATHS or request.path.startswith("/static/"):
-        return None
-    if session.get("auth"):
-        return None
-    if request.path.startswith("/api/"):
-        return jsonify({"error": "Session expired - reload the page and sign in."}), 401
-    return redirect(url_for("login", next=request.path))
-
-
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    if not APP_PASSWORD:
-        return redirect("/")
-    error = ""
-    if request.method == "POST":
-        if hmac.compare_digest(request.form.get("password", ""), APP_PASSWORD):
-            session["auth"] = True
-            session.permanent = True
-            return redirect(request.args.get("next") or "/")
-        error = "Wrong password."
-    return render_template("login.html", error=error)
-
-
-@app.post("/logout")
-def logout():
-    session.clear()
-    return redirect(url_for("login"))
-
-
-def _folder_arg(raw: str) -> Path:
-    return Path(os.path.expandvars(os.path.expanduser((raw or "").strip().strip('"')))).resolve()
+@app.after_request
+def security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    return response
 
 
 @app.get("/")
 def index():
-    s = config.load_settings()
-    return render_template(
-        "index.html",
-        settings=s,
-        presets=config.TEMPLATE_PRESETS,
-        aliases=config.load_aliases(),
-        ocr_ready=ocr.available(),
-        ocr_error=ocr.engine_error(),
-        cloud_mode=CLOUD_MODE,
-        locked=bool(APP_PASSWORD),
-        max_files=uploads.MAX_FILES,
-        max_file_mb=uploads.MAX_FILE_MB,
-    )
+    return render_template("index.html", presets=TEMPLATE_PRESETS,
+                           default_template=TEMPLATE_PRESETS["standard"])
 
 
-@app.get("/api/aliases")
-def get_aliases():
-    return jsonify(config.load_aliases())
+@app.get("/test")
+def test_page():
+    """Dev harness: runs the browser engine over the PDFs in ./samples."""
+    if not SAMPLES.is_dir():
+        return jsonify({"error": "no samples folder"}), 404
+    return render_template("test.html",
+                           samples=sorted(p.name for p in SAMPLES.glob("*.pdf")))
 
 
-@app.post("/api/aliases")
-def post_alias():
-    """Teach the app a clean name for something a receipt spells badly."""
-    body = request.get_json(force=True) or {}
-    kind = body.get("kind", "receiver")
-    aliases = config.save_alias(kind, body.get("raw", ""), body.get("clean", ""))
-    job = renamer.JOBS.get(body.get("job_id", ""))
-    if job:
-        job.rebuild_names({})
-    return jsonify({"aliases": aliases, "job": job.snapshot() if job else None})
+@app.get("/samples/<path:name>")
+def sample_file(name: str):
+    if not SAMPLES.is_dir():
+        return jsonify({"error": "no samples folder"}), 404
+    return send_from_directory(SAMPLES, name)
 
 
 @app.get("/healthz")
 def healthz():
-    return jsonify({"ok": True, "ocr": ocr.available(), "cloud": CLOUD_MODE})
-
-
-@app.get("/api/settings")
-def get_settings():
-    s = config.load_settings()
-    s["api_key"] = "***" if s.get("api_key") else ""
-    return jsonify(s)
-
-
-@app.post("/api/settings")
-def post_settings():
-    patch = request.get_json(force=True) or {}
-    if patch.get("api_key") == "***":
-        patch.pop("api_key")
-    s = config.save_settings(patch)
-    s["api_key"] = "***" if s.get("api_key") else ""
-    return jsonify(s)
-
-
-@app.post("/api/upload")
-def upload():
-    """Hosted mode: take copies of the PDFs and read them in a session folder."""
-    files = request.files.getlist("files")
-    if not files:
-        return jsonify({"error": "No files received."}), 400
-    folder, saved, rejected = uploads.save_uploads(files)
-    if not saved:
-        return jsonify({"error": "; ".join(rejected) or "No PDF files received."}), 400
-
-    settings = config.load_settings()
-    settings.update({
-        "template": request.form.get("template") or config.DEFAULT_TEMPLATE,
-        "recursive": False,
-        "strip_legal_suffix": request.form.get("strip_legal_suffix") == "true",
-        "invoice_from_filename": request.form.get("invoice_from_filename") == "true",
-        "ocr_dpi": int(request.form.get("ocr_dpi") or 400),
-    })
-    job = renamer.start_job(folder, settings)
-    return jsonify({"job_id": job.id, "total": job.total, "rejected": rejected})
-
-
-@app.get("/api/download/<job_id>")
-def download(job_id: str):
-    job = renamer.JOBS.get(job_id)
-    if not job or not uploads.is_session(job.folder):
-        return jsonify({"error": "nothing to download"}), 404
-    return send_file(uploads.zip_folder(job.folder), mimetype="application/zip",
-                     as_attachment=True, download_name="renamed_receipts.zip")
-
-
-@app.post("/api/browse")
-def browse():
-    """List sub-folders so users can click their way to a folder on any OS."""
-    if CLOUD_MODE:
-        return jsonify({"error": "Folder browsing is only available in the desktop version."}), 403
-    raw = (request.get_json(force=True) or {}).get("folder", "")
-    folder = _folder_arg(raw) if raw else Path.home()
-    if not folder.is_dir():
-        return jsonify({"error": f"Not a folder: {folder}"}), 400
-    try:
-        subs = sorted((p.name for p in folder.iterdir()
-                       if p.is_dir() and not p.name.startswith(".")), key=str.lower)
-    except PermissionError:
-        return jsonify({"error": f"No permission to read {folder}"}), 403
-    return jsonify({
-        "folder": str(folder),
-        "parent": str(folder.parent) if folder.parent != folder else "",
-        "subfolders": subs[:400],
-        "pdf_count": len(renamer.list_pdfs(folder, False)),
-    })
-
-
-@app.post("/api/scan")
-def scan():
-    if CLOUD_MODE:
-        return jsonify({"error": "Folder scanning is only available in the desktop version."}), 403
-    body = request.get_json(force=True) or {}
-    folder = _folder_arg(body.get("folder", ""))
-    if not folder.is_dir():
-        return jsonify({"error": f"Folder not found: {folder}"}), 400
-
-    settings = config.save_settings({
-        "template": body.get("template") or config.DEFAULT_TEMPLATE,
-        "recursive": bool(body.get("recursive")),
-        "strip_legal_suffix": bool(body.get("strip_legal_suffix")),
-        "invoice_from_filename": bool(body.get("invoice_from_filename")),
-        "ocr_dpi": int(body.get("ocr_dpi") or 400),
-        "last_folder": str(folder),
-    })
-    job = renamer.start_job(folder, settings)
-    if job.total == 0:
-        return jsonify({"error": f"No PDF files in {folder}"}), 400
-    return jsonify({"job_id": job.id, "total": job.total})
-
-
-@app.get("/api/job/<job_id>")
-def job_status(job_id: str):
-    job = renamer.JOBS.get(job_id)
-    if not job:
-        return jsonify({"error": "job not found"}), 404
-    return jsonify(job.snapshot())
-
-
-@app.post("/api/job/<job_id>/retemplate")
-def retemplate(job_id: str):
-    job = renamer.JOBS.get(job_id)
-    if not job:
-        return jsonify({"error": "job not found"}), 404
-    body = request.get_json(force=True) or {}
-    config.save_settings({k: body[k] for k in
-                          ("template", "strip_legal_suffix", "invoice_from_filename")
-                          if k in body})
-    job.rebuild_names(body)
-    return jsonify(job.snapshot())
-
-
-@app.post("/api/job/<job_id>/cancel")
-def cancel(job_id: str):
-    job = renamer.JOBS.get(job_id)
-    if job:
-        job.cancelled = True
     return jsonify({"ok": True})
-
-
-@app.post("/api/apply")
-def apply():
-    body = request.get_json(force=True) or {}
-    items = body.get("items", [])
-    if CLOUD_MODE:
-        job = renamer.JOBS.get(body.get("job_id", ""))
-        if not job or not uploads.is_session(job.folder):
-            return jsonify({"error": "session expired - please upload again"}), 400
-        allowed = {str(p) for p in job.folder.glob("*.pdf")}
-        items = [i for i in items if i.get("path") in allowed]
-    return jsonify(renamer.apply_renames(items, keep_history=not CLOUD_MODE))
-
-
-@app.get("/api/history")
-def history():
-    return jsonify({"entries": renamer.list_history()})
-
-
-@app.post("/api/undo")
-def undo():
-    name = (request.get_json(force=True) or {}).get("file", "")
-    return jsonify(renamer.undo(name))
-
-
-@app.get("/api/preview")
-def preview():
-    """Serve one PDF back to the browser so the user can eyeball it."""
-    path = Path(request.args.get("path", ""))
-    if not path.is_file() or path.suffix.lower() != ".pdf":
-        return jsonify({"error": "not a pdf"}), 404
-    if CLOUD_MODE and not uploads.is_session(path.parent):
-        return jsonify({"error": "not available"}), 403
-    return send_file(path, mimetype="application/pdf")
 
 
 def _free_port(preferred: int = 8765) -> int:
@@ -275,16 +71,17 @@ def _free_port(preferred: int = 8765) -> int:
                 return sock.getsockname()[1]
             except OSError:
                 continue
-    return 8765
+    return preferred
 
 
 def main() -> None:
     port = int(os.environ.get("PORT") or _free_port())
     url = f"http://127.0.0.1:{port}"
-    print(f"\n  Bank Receipt Renamer running at {url}\n  (Ctrl+C to stop)\n")
+    print(f"\n  Receipt Renamer running at {url}\n  (Ctrl+C to stop)\n")
     if os.environ.get("NO_BROWSER") != "1":
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    app.run(host="127.0.0.1", port=port, debug=False, threaded=True)
+    app.run(host="0.0.0.0" if os.environ.get("CLOUD_MODE") else "127.0.0.1",
+            port=port, threaded=True)
 
 
 if __name__ == "__main__":
