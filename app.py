@@ -19,10 +19,10 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, send_from_directory
 
 TEMPLATE_PRESETS = {
-    "standard": "{bank}_{receiver}_{amount}{currency}_{invoice}",
-    "with_date": "{date}_{bank}_{receiver}_{amount}{currency}_{invoice}",
-    "audit": "{date}_{bank}_{sender}_TO_{receiver}_{amount}{currency}_{invoice}",
-    "ref_based": "{bank}_{receiver}_{amount}{currency}_{ref}",
+    "standard": "{bank}_{party}_{currency}{amount}_{inv}",
+    "with_date": "{date}_{bank}_{party}_{currency}{amount}_{inv}",
+    "audit": "{date}_{bank}_{sender}_TO_{receiver}_{currency}{amount}_{inv}",
+    "ref_based": "{bank}_{party}_{currency}{amount}_REF_{ref}",
 }
 
 app = Flask(__name__)
@@ -47,8 +47,9 @@ def test_page():
     """Dev harness: runs the browser engine over the PDFs in ./samples."""
     if not SAMPLES.is_dir():
         return jsonify({"error": "no samples folder"}), 404
-    return render_template("test.html",
-                           samples=sorted(p.name for p in SAMPLES.glob("*.pdf")))
+    names = sorted(p.name for p in SAMPLES.iterdir()
+                   if p.is_file() and p.suffix.lower() == ".pdf")
+    return render_template("test.html", samples=names)
 
 
 @app.get("/samples/<path:name>")

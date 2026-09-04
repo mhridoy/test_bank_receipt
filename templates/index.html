@@ -128,6 +128,14 @@
             <option value="sharp">Sharp</option>
           </select>
         </label>
+        <label class="inline">Company name
+          <select id="nameWords">
+            <option value="1">first word</option>
+            <option value="2">first two words</option>
+            <option value="3">first three words</option>
+            <option value="0">full name</option>
+          </select>
+        </label>
         <label class="inline">OCR language
           <select id="ocrLangs">
             <option value="eng">English</option>
@@ -136,7 +144,7 @@
         </label>
       </div>
       <div class="tokens">
-        {% for t in ['bank','sender','receiver','amount','amount_net','currency','invoice','ref','date','receiver_bank','orig'] %}
+        {% for t in ['bank','party','receiver','sender','currency','amount','amount_net','inv','invoice','ref','ben_id','date','receiver_bank','orig'] %}
         <button class="token mono" data-token="{{ '{' ~ t ~ '}' }}">{{ '{' ~ t ~ '}' }}</button>
         {% endfor %}
       </div>

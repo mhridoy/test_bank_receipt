@@ -3,7 +3,8 @@
 A web page that renames your bank-receipt PDFs — **in your own folder, on your own PC**.
 
 ```
-RV INV 7260019.pdf   →   RiyadBank_PioneerMetalCorners_200640.50SAR_7260019.pdf
+PV INV 4260007.PDF   →   SaudiNationalBank_WajdAlamani_SAR440766.48_INV_4260007.pdf
+RV INV 7260019.pdf   →   RiyadBank_PioneerMetal_SAR200640.50_INV_7260019.pdf
 ```
 
 Nothing to install. Nothing is uploaded. You open the page in Chrome or Edge,
@@ -36,7 +37,8 @@ pulled out with plain rules (`static/engine.js`). No AI service, no API key, no 
 
 ## It learns every day
 
-- **Account numbers.** An IBAN never changes spelling, a company name does. When a
+- **Account numbers and beneficiary IDs.** An IBAN, an account number, or a bank's
+  `BEN ID` never changes spelling; a company name does. When a
   receipt is read cleanly, the app stores *account number → company*. Every later
   receipt to that account is named the same way, even if the OCR mangles the name.
   IBANs are checked with the ISO 13616 checksum first, so a mis-read number is
@@ -90,21 +92,40 @@ the page. Your settings and learned names stay in that browser.
 
 | Token | Meaning |
 |---|---|
-| `{bank}` | Sending bank, short form (`RiyadBank`, `AlJaziraBank`) |
+| `{bank}` | The bank that issued the receipt (`SaudiNationalBank`, `RiyadBank`) |
+| `{party}` | **The other company** — the beneficiary on an outgoing payment, the payer on an incoming one |
 | `{sender}` | Account holder / payer |
 | `{receiver}` | Beneficiary |
 | `{amount}` | Amount debited (`200640.50`) |
 | `{amount_net}` | Transfer amount excluding fees, when the receipt shows both |
 | `{currency}` | `SAR`, `USD`, … |
-| `{invoice}` | Invoice number, if the receipt shows one |
+| `{inv}` | `INV_00570` — the invoice number with its prefix, or nothing when there is none |
+| `{invoice}` | The bare invoice number |
+| `{ben_id}` | Beneficiary ID, where the bank prints one |
 | `{ref}` | Bank transaction reference |
 | `{date}` | Transaction date `YYYY-MM-DD` |
 | `{receiver_bank}` | Beneficiary's bank |
 | `{orig}` | Original file name |
 
-Presets: `standard` (your format), `with_date` (sorts the folder chronologically —
-recommended for archives), `audit` (sender and receiver), `ref_based`.
-A token with no value simply disappears from the name.
+Presets: `standard` = `{bank}_{party}_{currency}{amount}_{inv}`, `with_date`
+(same with the date first — sorts the folder chronologically), `audit` (both
+parties), `ref_based`. A token with no value simply disappears from the name.
+
+Company names are cut to their **first two words** by default (`Wajd Alamani
+Contracting Establishment` → `WajdAlamani`); change it under *Advanced → Company
+name* to one, three, or the full name.
+
+### Arabic receipts
+
+Saudi banks often print only the Arabic name of the beneficiary, glued to its
+label, in right-to-left order, with a riyal sign (`⃂`) instead of `SAR`. All of
+that is handled: the text is normalised, the name is transliterated for the file
+name (`شركة وجد الأماني للمقاولات` → `WajdAlamani`), and the printed Arabic is
+kept so a correction can be matched against it later.
+
+Transliteration is a first guess — Arabic does not write short vowels. Fix a
+supplier's name once and the app uses your spelling forever, matched by the
+beneficiary's account number or bank ID.
 
 Note on amounts: Bank Aljazira prints both the debited total and the transfer
 amount before fees (e.g. `302365.00` and `302358.00`). `{amount}` is the debited

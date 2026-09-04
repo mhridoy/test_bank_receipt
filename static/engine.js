@@ -2,7 +2,16 @@
    This is a port of receipt_renamer/parse.py + naming.py (kept in the repo as
    the optional desktop fallback); when you add a bank rule, add it in both. */
 
+import { normaliseArabic, transliterate, hasArabic } from "./arabic.js";
+
 export const CURRENCIES = "SAR|USD|EUR|AED|QAR|KWD|BHD|OMR|GBP|JOD|EGP|TRY|INR|CNY";
+
+/* Saudi banks often print the riyal sign instead of a currency code:
+   ⃂ (U+20C2), ﷼ (U+FDFC) or ر.س - and the figure may carry a minus sign. */
+const CURRENCY_SYMBOLS = "⃂|﷼|ر\\.?س|SR";
+
+/* A party name may be Arabic, Latin, or Arabic glued straight onto its label. */
+const NAME_CHARS = "A-Za-z؀-ۿﭐ-﷿ﹰ-ﻼ0-9 &.'\\-";
 
 const BANK_PATTERNS = [
   ["Riyad Bank",            /riyad\s*bank|riyadbank\.com|بنك\s*الرياض/i],
@@ -26,12 +35,35 @@ const BANK_PATTERNS = [
 
 /* view: "line" = spacing-repaired single line, "raw" = original lines, "flat" = no spaces */
 const RECEIVER_RULES = [
+  // SNB: "Beneficiary Nameشركة وجد الأماني للمقاولات" - the label is glued to an
+  // Arabic name, and it sits on its own line.
+  ["raw", new RegExp(`^\\s*Beneficiary\\s*Name\\s*[:\\-]?\\s*([${NAME_CHARS}]{3,70}?)\\s*$`, "im")],
+  // The narration line, in either reading order - a right-to-left page can put
+  // the reference before the name.
+  ["line", new RegExp(`(?:Outgoing|Incoming)\\s+(?:internal\\s+transfer|Local\\s+Transfer|transfer)\\s+([${NAME_CHARS}]{3,70}?)\\s*Ref\\.`, "i")],
+  ["line", new RegExp(`Ref\\.\\s*\\d+\\s+([${NAME_CHARS}]{3,70}?)\\s+(?:Outgoing|Incoming)\\s+(?:internal|Local)`, "i")],
   ["line", /\bTO\s*:\s*([A-Za-z][A-Za-z0-9 &.'\-]{3,70}?)\s*(?:,|;|\bREF\b|$)/i],
   ["line", /\bBeneficiary\s+(?:Name\s*[:\-]?\s*)?([A-Za-z][A-Za-z0-9 &.'\-]{3,70}?)\s+Beneficiary\s+Account/i],
   ["line", /\bBeneficiary\s*Name\s*[:\-]?\s*([A-Za-z][A-Za-z0-9 &.'\-]{3,70}?)(?=\s+(?:Amount|Reference|Ref\b|Invoice|Bill|IBAN|Account|Bank|Date|Purpose|Currency|Status|$))/i],
   ["line", /\bBeneficiary\s+Name\s*[:\-]?\s*([A-Za-z][A-Za-z0-9 &.'\-]{3,70}?)\s{2,}/i],
   ["line", /\b(?:Payee|Pay\s+to|Credit\s+to)\s*[:\-]?\s*([A-Za-z][A-Za-z0-9 &.'\-]{3,70}?)\s*(?:,|$)/i],
   ["raw",  /(?:المستفيد|اسم\s*المستفيد)\s*[:\-]?\s*(.+)/],
+];
+
+/* Identifiers a bank prints for the person being paid. They are not account
+   numbers, but they are just as stable - and on an internal transfer they may be
+   the only thing that identifies the beneficiary. */
+const BENEFICIARY_ID_RULES = [
+  ["line", /\bBEN\s*ID\s*[:\-]?\s*(\d{6,15})/i],
+  ["line", /\bREM\s*ID\s*[:\-]?\s*(\d{6,15})/i],
+  ["line", /\bBeneficiary\s*(?:ID|Number|No)\s*[:\-]?\s*(\d{6,15})/i],
+];
+
+/* The account the money went to, as printed inside an internal-transfer line:
+   "Outgoing internal transfer 18800000543403  شراء بضاعةBEN ID:7053930587" */
+const INTERNAL_TRANSFER_ACCOUNT_RULES = [
+  ["line", /Outgoing\s+internal\s+transfer\s+(?:BB\s*:[^0-9]{0,20})?(\d{10,18})\b/i],
+  ["line", /\bBB\s*:\s*[A-Za-z ]{0,20}(\d{10,18})\b/i],
 ];
 
 const SENDER_RULES = [
@@ -41,6 +73,12 @@ const SENDER_RULES = [
   ["raw",  /^(.{6,70})\s*\n\s*The operation has completed/im],
   ["raw",  /(?:اسم\s*(?:صاحب\s*)?الحساب)\s*[:\-]?\s*(.+)/],
   ["raw",  /^\s*([؀-ۿ][^\n]{5,70})\s*$/m],
+];
+
+const REMITTER_RULES = [
+  ["raw", new RegExp(`^\\s*(?:Remitter|Sender|Ordering\\s*Customer|Payer)\\s*(?:Name)?\\s*[:\\-]?\\s*([${NAME_CHARS}]{3,70}?)\\s*$`, "im")],
+  ["line", new RegExp(`\\b(?:Received\\s+from|Credited\\s+by|Transfer\\s+from|from)\\s+([${NAME_CHARS}]{4,70}?)\\s*(?:,|Ref\\.|Amount|$)`, "i")],
+  ["raw", /(?:المرسل|اسم\s*المرسل|من)\s*[:\-]?\s*(.+)/],
 ];
 
 const RECEIVER_BANK_RULES = [
@@ -82,7 +120,7 @@ const OWN_ACCOUNT_CONTEXT =
 /* Long digit strings that are not accounts: phone numbers, registers, boxes,
    references, cheque numbers, VAT numbers, timestamps. */
 const NOT_AN_ACCOUNT =
-  /tel|phone|fax|mobile|p\.?o\.?\s*box|box|c\.?r\.?|commercialregister|register|vat|tax|ref(?:erence)?|cheque|check|invoice|bill|order|ticket|otp|zip|postal|هاتف|جوال|سجل|ضريب|مرجع/i;
+  /tel|phone|fax|mobile|p\.?o\.?\s*box|box|c\.?r\.?|commercialregister|register|vat|tax|ref(?:erence)?|cheque|check|invoice|bill|order|ticket|otp|zip|postal|ben\s*id|rem\s*id|beneficiary\s*id|هاتف|جوال|سجل|ضريب|مرجع/i;
 /** OCR mixes up letters and digits inside numbers - repair them in numeric fields. */
 export function fixDigits(value) {
   return String(value || "")
@@ -155,10 +193,49 @@ function cleanParty(value) {
   return tokens.join(" ").trim();
 }
 
+/** Which bank issued this receipt?
+
+    A receipt names other banks too - the beneficiary's bank, the correspondent -
+    so a plain "first match wins" picks the wrong one. The issuer is the bank in
+    the footer (its legal small print) or, failing that, the one named most often. */
 function findBank(v) {
-  for (const [canon, pattern] of BANK_PATTERNS) if (pattern.test(v.line)) return canon;
-  const m = v.line.match(/\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2}\s+Bank)\b/);
+  const text = v.line;
+  const footerFrom = Math.floor(text.length * 0.62);
+  let best = null;
+
+  for (const [canon, pattern] of BANK_PATTERNS) {
+    const global = new RegExp(pattern.source, "gi");
+    const hits = [...text.matchAll(global)].map((m) => m.index);
+    if (!hits.length) continue;
+    const inFooter = hits.some((i) => i >= footerFrom);
+    const score = (inFooter ? 100 : 0) + hits.length;
+    if (!best || score > best.score) best = { canon, score, first: hits[0] };
+  }
+  if (best) return best.canon;
+
+  const m = text.match(/\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2}\s+Bank)\b/);
   return m ? m[1] : "";
+}
+
+/* Which way the money went. Outgoing is the common case, but a statement of an
+   incoming payment names the payer, not the payee, as the other company. */
+function findDirection(v) {
+  const text = v.line;
+  if (/\b(incoming|credit(?:ed)?\s+transfer|deposit|received\s+from|inward)\b|وارد|إيداع/i.test(text)
+      && !/\boutgoing\b/i.test(text)) return "in";
+  if (/\b(outgoing|outward|debit(?:ed)?|transfer\s+to|payment\s+to)\b|صادر|تحويل\s*صادر/i.test(text)) return "out";
+  return /-\s?[\d,]+\.\d{2}/.test(text) ? "out" : "out";
+}
+
+/* A party name that trails into the bank's own name: "Sahat Altasheed Al Rajhi Bank" */
+function trimBankSuffix(name) {
+  if (!name) return name;
+  for (const [, pattern] of BANK_PATTERNS) {
+    const trailing = new RegExp(`\\s+(?:${pattern.source})[A-Za-z ]*$`, "i");
+    const trimmed = name.replace(trailing, "").trim();
+    if (trimmed && trimmed.length >= 4 && trimmed !== name) return trimmed;
+  }
+  return name.replace(/\s+bank$/i, "").trim();
 }
 
 /* The debited total and the transfer amount before fees, ignoring fee lines. */
@@ -169,6 +246,15 @@ function findAmounts(v) {
     new RegExp(`(${CURRENCIES})\\s*(-?[\\d,]+\\.\\d{2})\\b`, "gi"),
     new RegExp(`(-?[\\d,]+\\.\\d{2})\\s*(${CURRENCIES})\\b`, "gi"),
   ];
+
+  // Riyal sign instead of a code: "⃂ -224777.39". The sign also tells us this is
+  // the figure that moved, not the running balance printed next to it.
+  const symbolPattern = new RegExp(`(?:${CURRENCY_SYMBOLS})\\s*(-?[\\d,]+\\.\\d{2})`, "gi");
+  for (const m of text.matchAll(symbolPattern)) {
+    const value = Math.abs(parseFloat(m[1].replace(/,/g, "")));
+    if (value > 0) found.push([value, "SAR", true]);
+  }
+  const symbolled = found.length;
   for (const pattern of patterns) {
     for (const m of text.matchAll(pattern)) {
       const isCur = new RegExp(`^(?:${CURRENCIES})$`, "i").test(m[1]);
@@ -300,11 +386,12 @@ export function applyAliases(fields, aliases) {
 }
 
 export function parseText(text, aliases = {}) {
-  const v = views(text || "");
+  const v = views(normaliseArabic(text || ""));
   const fields = {
     bank_name: findBank(v),
-    sender_name: cleanParty(firstMatch(SENDER_RULES, v)),
-    receiver_name: cleanParty(firstMatch(RECEIVER_RULES, v)),
+    direction: findDirection(v),
+    sender_name: cleanParty(firstMatch(REMITTER_RULES, v)) || cleanParty(firstMatch(SENDER_RULES, v)),
+    receiver_name: trimBankSuffix(cleanParty(firstMatch(RECEIVER_RULES, v))),
     receiver_bank: firstMatch(RECEIVER_BANK_RULES, v),
     invoice_number: firstMatch(INVOICE_RULES, v),
     reference_number: firstMatch(REFERENCE_RULES, v),
@@ -312,11 +399,41 @@ export function parseText(text, aliases = {}) {
     ...findAmounts(v),
   };
   Object.assign(fields, findAccounts(v));
-  fields.sender_name_en = fields.sender_name;
-  fields.receiver_name_en = fields.receiver_name;
+
+  fields.beneficiary_id = firstMatch(BENEFICIARY_ID_RULES, v);
+  if (!fields.receiver_account) {
+    const internal = firstMatch(INTERNAL_TRANSFER_ACCOUNT_RULES, v);
+    if (internal) {
+      fields.receiver_account = internal;
+      fields.receiver_account_kind = "plain";
+      fields.receiver_account_valid = true;
+      fields.receiver_accounts = [internal];
+    }
+  }
+  // The beneficiary id is a learning key in its own right, kept apart from real
+  // account numbers so the two can never be confused.
+  if (fields.beneficiary_id) {
+    fields.receiver_accounts = [...new Set([...(fields.receiver_accounts || []),
+                                            `BENID:${fields.beneficiary_id}`])];
+    if (!fields.receiver_account) fields.receiver_account = `BENID:${fields.beneficiary_id}`;
+  }
+  // An Arabic name goes into the file name in Latin letters; the printed form is
+  // kept so a correction can be matched against it later.
+  fields.sender_name_en = hasArabic(fields.sender_name)
+    ? transliterate(fields.sender_name) : fields.sender_name;
+  fields.receiver_name_en = hasArabic(fields.receiver_name)
+    ? transliterate(fields.receiver_name) : fields.receiver_name;
   applyAliases(fields, aliases);
 
-  const missing = ["bank_name", "receiver_name", "amount"].filter((k) => !fields[k]);
+  // The company that matters for the file name is the other side of the payment:
+  // the beneficiary when money went out, the payer when money came in.
+  const counterparty = fields.direction === "in"
+    ? (fields.sender_name_en || fields.sender_name || fields.receiver_name_en || fields.receiver_name)
+    : (fields.receiver_name_en || fields.receiver_name || fields.sender_name_en || fields.sender_name);
+  fields.party_name = counterparty || "";
+
+  const partyKey = fields.direction === "in" ? "sender_name" : "receiver_name";
+  const missing = ["bank_name", partyKey, "amount"].filter((k) => !fields[k]);
   fields.confidence = missing.length === 0 ? "high" : (missing.length === 1 ? "medium" : "low");
   fields.missing = missing;
   return fields;
@@ -357,6 +474,8 @@ const WINDOWS_RESERVED = new Set(["CON", "PRN", "AUX", "NUL",
 export function camel(text, stripLegal = false) {
   if (!text) return "";
   const normalised = String(text).normalize("NFKD").replace(/[̀-ͯ]/g, "");
+  // "MMS Recycle" is initials plus a word: keep the initials shouting.
+  const mixedCase = /[a-z]/.test(normalised) && /[A-Z]/.test(normalised);
   let words = normalised.split(/[^0-9A-Za-z؀-ۿ]+/).filter(Boolean);
   if (stripLegal) {
     while (words.length && LEGAL_SUFFIXES.has(words[words.length - 1].toLowerCase().replace(/\./g, "")))
@@ -364,6 +483,7 @@ export function camel(text, stripLegal = false) {
   }
   return words.map((w) => {
     if (KNOWN_ACRONYMS.has(w.toUpperCase()) || /^\d+$/.test(w)) return /^[A-Za-z]+$/.test(w) ? w.toUpperCase() : w;
+    if (mixedCase && w.length <= 4 && /^[A-Z]+$/.test(w)) return w;
     if (/^[\x00-\x7F]+$/.test(w)) return w[0].toUpperCase() + w.slice(1).toLowerCase();
     return w;
   }).join("");
@@ -389,8 +509,8 @@ export function cleanRef(value) {
 export function cleanInvoice(value) {
   if (!value) return "";
   const s = String(value).trim();
-  const digits = s.match(/\d{4,}/g) || [];
-  if (digits.length === 1 && !/[A-Za-z]{3,}/.test(s)) return digits[0].replace(/^0+/, "") || digits[0];
+  const digits = s.match(/\d{3,}/g) || [];
+  if (digits.length === 1 && !/[A-Za-z]{3,}/.test(s)) return digits[0];   // keep 00570 as printed
   return s.replace(/[^0-9A-Za-z\-]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
@@ -410,20 +530,37 @@ export function sanitize(name, maxLen = 150) {
   return out.slice(0, maxLen).replace(/[\s._\-]+$/g, "");
 }
 
-export function buildName(fields, template, original, stripLegal = true, invoiceFallback = true) {
+/** "Wajd Alamani Contracting Establishment" -> "Wajd Alamani".
+    Long legal names make unreadable file names; the first words identify a
+    supplier just as well. 0 keeps the whole name. */
+export function shortenName(name, words = 2) {
+  if (!name || !words) return name || "";
+  const parts = String(name).trim().split(/\s+/);
+  return parts.slice(0, words).join(" ");
+}
+
+export function buildName(fields, template, original, stripLegal = true,
+                          invoiceFallback = true, nameWords = 2) {
   let invoice = cleanInvoice(fields.invoice_number);
   if (!invoice && invoiceFallback) invoice = invoiceFromName(original);
+
+  const party = fields.party_name
+    || (fields.direction === "in" ? (fields.sender_name_en || fields.sender_name)
+                                  : (fields.receiver_name_en || fields.receiver_name)) || "";
 
   const values = {
     bank: canonicalBank(fields.bank_name || ""),
     receiver_bank: canonicalBank(fields.receiver_bank || ""),
-    sender: camel(fields.sender_name_en || fields.sender_name || "", stripLegal),
-    receiver: camel(fields.receiver_name_en || fields.receiver_name || "", stripLegal),
+    sender: camel(shortenName(fields.sender_name_en || fields.sender_name || "", nameWords), stripLegal),
+    receiver: camel(shortenName(fields.receiver_name_en || fields.receiver_name || "", nameWords), stripLegal),
+    party: camel(shortenName(party, nameWords), stripLegal),
     amount: cleanAmount(fields.amount),
     amount_net: cleanAmount(fields.amount_net),
     currency: (fields.currency || "").toUpperCase().slice(0, 4),
     invoice,
+    inv: invoice ? `INV_${invoice}` : "",
     ref: cleanRef(fields.reference_number),
+    ben_id: fields.beneficiary_id || "",
     date: (fields.transaction_date || "").slice(0, 10),
     orig: original.replace(/\.[^.]*$/, ""),
   };

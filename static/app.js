@@ -13,9 +13,10 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g,
 const HAS_FS = "showDirectoryPicker" in window;
 
 const DEFAULTS = {
-  template: "{bank}_{receiver}_{amount}{currency}_{invoice}",
+  template: "{bank}_{party}_{currency}{amount}_{inv}",
   recursive: false, stripLegal: true, invFromName: true,
   useOcr: true, autoLearn: true, quality: "auto", ocrLangs: "eng", theme: "system",
+  nameWords: 2,
 };
 
 let settings = { ...DEFAULTS };
@@ -54,6 +55,7 @@ const options = () => ({
   autoLearn: $("autoLearn").checked,
   quality: $("quality").value,
   ocrLangs: $("ocrLangs").value,
+  nameWords: Number($("nameWords").value),
   theme: settings.theme,
 });
 
@@ -108,7 +110,7 @@ $("advBtn").onclick = () => {
   panel.hidden = !panel.hidden;
   if (!panel.hidden) animate(panel, { opacity: [0, 1], y: [-6, 0] }, { duration: 0.25 });
 };
-["stripLegal", "invFromName", "useOcr", "autoLearn", "recursive", "quality", "ocrLangs"]
+["stripLegal", "invFromName", "useOcr", "autoLearn", "recursive", "quality", "ocrLangs", "nameWords"]
   .forEach((id) => ($(id).onchange = () => { persist(); if (id !== "recursive") rebuildNames(); }));
 
 /* ── folder ────────────────────────────────────────────────────── */
@@ -245,7 +247,7 @@ async function scan() {
       row.engine = result.engine + (result.profile && result.engine === "ocr" ? `·${result.profile}` : "");
       row.confidence = result.confidence;
       row.notes = result.note || "";
-      row.proposed = buildName(fields, o.template, row.name, o.stripLegal, o.invFromName);
+      row.proposed = buildName(fields, o.template, row.name, o.stripLegal, o.invFromName, o.nameWords);
       row.status = fields.missing.length ? "review" : "ready";
       if (fields.missing.length) row.notes = `${row.notes} Missing: ${fields.missing.join(", ")}.`.trim();
       else if ((result.confidence ?? 100) < 65) {
@@ -400,7 +402,7 @@ function rebuildNames() {
   for (const row of rows) {
     if (!row.rawFields || row.status === "renamed") continue;
     row.fields = { ...row.rawFields };
-    row.proposed = buildName(row.fields, o.template, row.name, o.stripLegal, o.invFromName);
+    row.proposed = buildName(row.fields, o.template, row.name, o.stripLegal, o.invFromName, o.nameWords);
   }
   render();
 }
@@ -458,7 +460,7 @@ $("teachSave").onclick = async (e) => {
     row.rawFields.receiver_name = row.rawFields.receiver_name || clean;
     row.fields.missing = (row.fields.missing || []).filter((m) => m !== "receiver_name");
     row.status = row.fields.missing.length ? "review" : "ready";
-    row.proposed = buildName(row.fields, o.template, row.name, o.stripLegal, o.invFromName);
+    row.proposed = buildName(row.fields, o.template, row.name, o.stripLegal, o.invFromName, o.nameWords);
   }
   markDuplicates();
   render();
@@ -538,7 +540,7 @@ let lastBatch = null;
 async function learnFromEdit(row, edited) {
   if (!settings.autoLearn || !edited || !row.rawFields) return;
   const o = options();
-  const generated = buildName(row.fields, o.template, row.name, o.stripLegal, o.invFromName);
+  const generated = buildName(row.fields, o.template, row.name, o.stripLegal, o.invFromName, o.nameWords);
   const before = generated.replace(/\.pdf$/i, "").split("_");
   const after = edited.trim().replace(/\.pdf$/i, "").split("_");
   if (before.length !== after.length) return;                  // structure changed, not a rename of the party
@@ -546,7 +548,7 @@ async function learnFromEdit(row, edited) {
   const receiverSegment = buildName({ ...row.fields, bank_name: "", amount: "", currency: "",
                                       invoice_number: "", reference_number: "",
                                       transaction_date: "", sender_name: "", sender_name_en: "" },
-                                    "{receiver}", "x.pdf", o.stripLegal, false).replace(/\.pdf$/i, "");
+                                    "{party}", "x.pdf", o.stripLegal, false, o.nameWords).replace(/\.pdf$/i, "");
   if (!receiverSegment) return;
 
   const changed = before.map((part, i) => [part, after[i]]).filter(([a, b]) => a !== b);
@@ -772,6 +774,7 @@ if ("serviceWorker" in navigator && location.protocol !== "file:") {
     $(id).checked = settings[id];
   $("quality").value = settings.quality;
   $("ocrLangs").value = settings.ocrLangs;
+  $("nameWords").value = String(settings.nameWords ?? 2);
   names = await memory.nameBook();
   updateExample();
   renderMemory();
