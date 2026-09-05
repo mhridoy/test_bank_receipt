@@ -54,13 +54,17 @@ pulled out with plain rules (`static/engine.js`). No AI service, no API key, no 
 - **Duplicates.** Same bank, company, amount and day twice is flagged and left
   unticked, so a double-filed payment does not get renamed into place silently.
 
+None of this is on the page: it happens while receipts are read. *Advanced* shows
+a one-line count and a **Manage** button if you ever want to look at, correct or
+remove what it has picked up.
+
 Everything it learns lives in this browser (IndexedDB). It also protects itself:
 a name that has proved itself over several receipts is not overwritten by one bad
 read, and only a person's correction can override a confirmed name.
 
 ### One memory for the whole office
 
-Under **Name corrections → Shared office memory**, point every PC at a single JSON
+Under **Advanced → Manage → Shared office memory**, point every PC at a single JSON
 file on your network drive (`Create file` once, `Use existing file` on the others).
 Each PC merges that file when the page opens and writes back after every rename —
 newest entry per account wins. What one person teaches today, everyone has tomorrow.

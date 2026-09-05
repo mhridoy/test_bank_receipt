@@ -699,11 +699,15 @@ async function renderMemory() {
   }
 
   const stats = await memory.learningStats();
-  const chip = $("memoryChip");
-  chip.hidden = !(stats.accounts + stats.names);
-  chip.textContent = `${stats.accounts} account${stats.accounts === 1 ? "" : "s"} · ${stats.names} name${stats.names === 1 ? "" : "s"} remembered`
-    + (stats.thisWeek ? ` · ${stats.thisWeek} learned this week` : "");
+  $("memoryChip").textContent = stats.accounts + stats.names
+    ? `Learned on its own: ${stats.accounts} account${stats.accounts === 1 ? "" : "s"}, `
+      + `${stats.names} name${stats.names === 1 ? "" : "s"}`
+      + (stats.thisWeek ? ` · ${stats.thisWeek} this week` : "")
+    : "Learning quietly in the background.";
 }
+
+$("memManage").onclick = async () => { await renderMemory(); $("memoryDialog").showModal(); };
+$("memoryClose").onclick = (e) => { e.preventDefault(); $("memoryDialog").close(); };
 
 $("memExport").onclick = async () => {
   const data = await memory.exportAll();

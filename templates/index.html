@@ -47,7 +47,6 @@
   <section class="card reveal" id="cardSource">
     <div class="card-head">
       <span class="step">1</span><h2>Receipts folder</h2>
-      <span id="memoryChip" class="chip soft right" hidden></span>
     </div>
 
     <div id="pickState">
@@ -147,6 +146,15 @@
           </select>
         </label>
       </div>
+      <div class="memory-line">
+        <span id="memoryChip" class="muted small">Learning quietly in the background.</span>
+        <span class="grow"></span>
+        <button id="memManage" class="link">Manage</button>
+        <button id="memExport" class="link">Export</button>
+        <button id="memImport" class="link">Import</button>
+        <input id="memFile" type="file" accept="application/json" hidden>
+      </div>
+
       <div class="tokens">
         {% for t in ['bank','party','receiver','sender','currency','amount','amount_net','inv','invoice','ref','ben_id','dmy','date','ymd','dir','bank_full','receiver_bank','orig'] %}
         <button class="token mono" data-token="{{ '{' ~ t ~ '}' }}">{{ '{' ~ t ~ '}' }}</button>
@@ -204,47 +212,6 @@
     </div>
   </section>
 
-  <!-- memory -->
-  <div class="two-col">
-    <section class="card reveal">
-      <div class="card-head">
-        <h2>Known accounts</h2>
-        <span class="muted small">learned automatically</span>
-      </div>
-      <p class="muted small">An account number never changes spelling. Once a company is known,
-        every future receipt to that account is named the same way — even if the OCR misreads it.</p>
-      <ul id="accountList" class="list"></ul>
-    </section>
-
-    <section class="card reveal">
-      <div class="card-head">
-        <h2>Name corrections</h2>
-        <div class="right actions">
-          <button id="memExport" class="link">Export</button>
-          <button id="memImport" class="link">Import</button>
-          <input id="memFile" type="file" accept="application/json" hidden>
-        </div>
-      </div>
-      <p class="muted small">Fix a name once and it is reused everywhere — and every rename you
-        correct by hand teaches it too.</p>
-      <ul id="nameList" class="list"></ul>
-
-      <div class="team">
-        <div class="team-head">
-          <strong>Shared office memory</strong>
-          <span id="teamState" class="muted small">No shared file yet.</span>
-        </div>
-        <p class="muted small">Point every PC at one JSON file on your network drive.
-          What one person teaches today, everyone has tomorrow.</p>
-        <div class="actions">
-          <button id="teamPick" class="ghost sm">Use existing file</button>
-          <button id="teamCreate" class="ghost sm">Create file</button>
-          <button id="teamSync" class="ghost sm">Sync now</button>
-          <button id="teamForget" class="link">stop sharing</button>
-        </div>
-      </div>
-    </section>
-  </div>
 </main>
 
 <div id="actionBar" class="action-bar" hidden>
@@ -267,6 +234,35 @@
     <button id="teachCancel" class="ghost">Cancel</button>
     <button id="teachSave" class="primary">Save</button>
   </menu>
+</dialog>
+
+<dialog id="memoryDialog" class="wide">
+  <h3>What the app has learned</h3>
+  <p class="muted small">It picks these up on its own while reading receipts. Nothing here
+    is sent anywhere — it lives in this browser.</p>
+
+  <h4 class="sub-head">Accounts and beneficiary IDs</h4>
+  <ul id="accountList" class="list"></ul>
+
+  <h4 class="sub-head">Name corrections</h4>
+  <ul id="nameList" class="list"></ul>
+
+  <div class="team">
+    <div class="team-head">
+      <strong>Shared office memory</strong>
+      <span id="teamState" class="muted small">No shared file yet.</span>
+    </div>
+    <p class="muted small">Point every PC at one JSON file on your network drive — what one
+      person teaches today, everyone has tomorrow.</p>
+    <div class="actions">
+      <button id="teamPick" class="ghost sm">Use existing file</button>
+      <button id="teamCreate" class="ghost sm">Create file</button>
+      <button id="teamSync" class="ghost sm">Sync now</button>
+      <button id="teamForget" class="link">stop sharing</button>
+    </div>
+  </div>
+
+  <menu><button id="memoryClose" class="primary">Done</button></menu>
 </dialog>
 
 <div id="toasts" class="toasts"></div>
