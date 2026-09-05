@@ -467,6 +467,32 @@ const BANK_ALIASES = [
   [/standard chartered/i, "StandardChartered"], [/citi/i, "Citibank"],
 ];
 
+/* Short forms for file names. The full name is still available as {bank_full}.
+   Anything not listed falls back to the generator below, which follows the same
+   shape: the distinctive word, then the initials of the rest, then B for bank. */
+const BANK_SHORT = {
+  SaudiNationalBank: "SaudiNB", RiyadBank: "RiyadB", AlRajhiBank: "RajhiB",
+  AlJaziraBank: "JaziraB", AlinmaBank: "AlinmaB", BankAlbilad: "BiladB",
+  ArabNationalBank: "ArabNB", SABB: "SABB", SaudiInvestmentBank: "SAIB",
+  BanqueSaudiFransi: "FransiB", GulfInternationalBank: "GIB", SambaBank: "SambaB",
+  EmiratesNBD: "ENBD", FirstAbuDhabiBank: "FAB", QNB: "QNB", HSBC: "HSBC",
+  StandardChartered: "SCB", Citibank: "CitiB",
+};
+
+const BANK_NOISE = /^(bank|banque|the|of|company|corporation|group|saudi|al)$/i;
+
+/** "Kuwait Finance House" -> "KuwaitFH", "Dubai Islamic Bank" -> "DubaiIB" */
+export function shortBank(canonical) {
+  if (!canonical) return "";
+  if (BANK_SHORT[canonical]) return BANK_SHORT[canonical];
+  const words = canonical.replace(/([a-z])([A-Z])/g, "$1 $2").split(/\s+/).filter(Boolean);
+  if (words.length <= 1) return canonical.slice(0, 10);
+  const head = words.find((w) => !BANK_NOISE.test(w)) || words[0];
+  const tail = words.slice(words.indexOf(head) + 1).map((w) => w[0].toUpperCase()).join("");
+  const short = head[0].toUpperCase() + head.slice(1) + tail;
+  return short.length > 12 ? short.slice(0, 12) : short;
+}
+
 const WINDOWS_RESERVED = new Set(["CON", "PRN", "AUX", "NUL",
   ...Array.from({ length: 9 }, (_, i) => `COM${i + 1}`),
   ...Array.from({ length: 9 }, (_, i) => `LPT${i + 1}`)]);
@@ -540,7 +566,8 @@ export function shortenName(name, words = 2) {
 }
 
 export function buildName(fields, template, original, stripLegal = true,
-                          invoiceFallback = true, nameWords = 2) {
+                          invoiceFallback = true, nameWords = 2, options = {}) {
+  const { shortBankNames = true, trimCents = false } = options;
   let invoice = cleanInvoice(fields.invoice_number);
   if (!invoice && invoiceFallback) invoice = invoiceFromName(original);
 
@@ -548,20 +575,28 @@ export function buildName(fields, template, original, stripLegal = true,
     || (fields.direction === "in" ? (fields.sender_name_en || fields.sender_name)
                                   : (fields.receiver_name_en || fields.receiver_name)) || "";
 
+  const bankFull = canonicalBank(fields.bank_name || "");
+  const amount = cleanAmount(fields.amount);
+  const trimmed = (value) => (trimCents ? value.replace(/\.00$/, "") : value);
+
   const values = {
-    bank: canonicalBank(fields.bank_name || ""),
-    receiver_bank: canonicalBank(fields.receiver_bank || ""),
+    bank: shortBankNames ? shortBank(bankFull) : bankFull,
+    bank_full: bankFull,
+    receiver_bank: shortBankNames ? shortBank(canonicalBank(fields.receiver_bank || ""))
+                                  : canonicalBank(fields.receiver_bank || ""),
     sender: camel(shortenName(fields.sender_name_en || fields.sender_name || "", nameWords), stripLegal),
     receiver: camel(shortenName(fields.receiver_name_en || fields.receiver_name || "", nameWords), stripLegal),
     party: camel(shortenName(party, nameWords), stripLegal),
-    amount: cleanAmount(fields.amount),
-    amount_net: cleanAmount(fields.amount_net),
+    amount: trimmed(amount),
+    amount_net: trimmed(cleanAmount(fields.amount_net)),
     currency: (fields.currency || "").toUpperCase().slice(0, 4),
     invoice,
     inv: invoice ? `INV_${invoice}` : "",
     ref: cleanRef(fields.reference_number),
     ben_id: fields.beneficiary_id || "",
     date: (fields.transaction_date || "").slice(0, 10),
+    ymd: (fields.transaction_date || "").slice(0, 10).replace(/-/g, ""),
+    dir: fields.direction === "in" ? "IN" : "OUT",
     orig: original.replace(/\.[^.]*$/, ""),
   };
   if (!values.amount) values.currency = "";

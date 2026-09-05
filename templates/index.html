@@ -118,6 +118,10 @@
           <span>Read scanned receipts with OCR</span></label>
         <label class="check"><input type="checkbox" id="autoLearn" checked>
           <span>Remember account numbers and their company names</span></label>
+        <label class="check"><input type="checkbox" id="shortBank" checked>
+          <span>Short bank names (<code>SaudiNB</code>, <code>RiyadB</code>, <code>JaziraB</code>)</span></label>
+        <label class="check"><input type="checkbox" id="trimCents">
+          <span>Drop <code>.00</code> from round amounts</span></label>
       </div>
       <div class="adv-row">
         <label class="inline">Quality
@@ -144,7 +148,7 @@
         </label>
       </div>
       <div class="tokens">
-        {% for t in ['bank','party','receiver','sender','currency','amount','amount_net','inv','invoice','ref','ben_id','date','receiver_bank','orig'] %}
+        {% for t in ['bank','party','receiver','sender','currency','amount','amount_net','inv','invoice','ref','ben_id','date','ymd','dir','bank_full','receiver_bank','orig'] %}
         <button class="token mono" data-token="{{ '{' ~ t ~ '}' }}">{{ '{' ~ t ~ '}' }}</button>
         {% endfor %}
       </div>

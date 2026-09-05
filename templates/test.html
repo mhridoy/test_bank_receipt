@@ -23,7 +23,7 @@ for (const name of samples) {
       const r = await readPdf(buffer, { allowOcr: true, profile });
       const fields = parseText(r.text, {});
       const entry = { name, profile, engine: r.engine, secs: +((performance.now()-t0)/1000).toFixed(1),
-                      conf: r.confidence ?? null, proposed: buildName(fields, TPL, name, true, true, 2),
+                      conf: r.confidence ?? null, proposed: buildName(fields, TPL, name, true, true, 2, {shortBankNames:true}),
                       fields, text: r.text };
       window.BENCH.push(entry);
       log(`${name} [${profile}] ${entry.engine} ${entry.secs}s conf=${entry.conf}\n   -> ${entry.proposed}`);

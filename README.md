@@ -92,7 +92,8 @@ the page. Your settings and learned names stay in that browser.
 
 | Token | Meaning |
 |---|---|
-| `{bank}` | The bank that issued the receipt (`SaudiNationalBank`, `RiyadBank`) |
+| `{bank}` | The bank that issued the receipt, short form (`SaudiNB`, `RiyadB`, `JaziraB`) |
+| `{bank_full}` | The same bank spelled out (`SaudiNationalBank`) |
 | `{party}` | **The other company** — the beneficiary on an outgoing payment, the payer on an incoming one |
 | `{sender}` | Account holder / payer |
 | `{receiver}` | Beneficiary |
@@ -104,12 +105,19 @@ the page. Your settings and learned names stay in that browser.
 | `{ben_id}` | Beneficiary ID, where the bank prints one |
 | `{ref}` | Bank transaction reference |
 | `{date}` | Transaction date `YYYY-MM-DD` |
+| `{ymd}` | The same date as `20260811` |
+| `{dir}` | `OUT` or `IN` |
 | `{receiver_bank}` | Beneficiary's bank |
 | `{orig}` | Original file name |
 
 Presets: `standard` = `{bank}_{party}_{currency}{amount}_{inv}`, `with_date`
 (same with the date first — sorts the folder chronologically), `audit` (both
 parties), `ref_based`. A token with no value simply disappears from the name.
+
+Bank names are shortened by default (`SaudiNB`, `RiyadB`, `RajhiB`, `JaziraB`,
+`ArabNB`, `BiladB`, `AlinmaB`, `FransiB`, `SAIB`, `SABB`; anything unknown becomes
+its first word plus initials, e.g. `KuwaitFH`). Turn it off under *Advanced*, or
+drop `.00` from round amounts there as well.
 
 Company names are cut to their **first two words** by default (`Wajd Alamani
 Contracting Establishment` → `WajdAlamani`); change it under *Advanced → Company
