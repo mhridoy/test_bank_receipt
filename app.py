@@ -19,10 +19,10 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, send_from_directory
 
 TEMPLATE_PRESETS = {
-    "standard": "{bank}_{party}_{currency}{amount}_{inv}",
-    "with_date": "{date}_{bank}_{party}_{currency}{amount}_{inv}",
-    "audit": "{date}_{bank}_{sender}_TO_{receiver}_{currency}{amount}_{inv}",
-    "ref_based": "{bank}_{party}_{currency}{amount}_REF_{ref}",
+    "standard": "{bank}_{party}_{currency}{amount}_{inv}_{dmy}",
+    "date_first": "{ymd}_{bank}_{party}_{currency}{amount}_{inv}",
+    "audit": "{bank}_{sender}_TO_{receiver}_{currency}{amount}_{inv}_{dmy}",
+    "ref_based": "{bank}_{party}_{currency}{amount}_REF_{ref}_{dmy}",
 }
 
 app = Flask(__name__)

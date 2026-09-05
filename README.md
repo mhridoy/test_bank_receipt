@@ -3,8 +3,8 @@
 A web page that renames your bank-receipt PDFs — **in your own folder, on your own PC**.
 
 ```
-PV INV 4260007.PDF   →   SaudiNationalBank_WajdAlamani_SAR440766.48_INV_4260007.pdf
-RV INV 7260019.pdf   →   RiyadBank_PioneerMetal_SAR200640.50_INV_7260019.pdf
+PV INV 4260007.PDF   →   SaudiNB_WajdAlamani_SAR440766.48_INV_4260007_17Aug26.pdf
+RV INV 7260019.pdf   →   RiyadB_PioneerMetal_SAR200640.50_INV_7260019_02Sep26.pdf
 ```
 
 Nothing to install. Nothing is uploaded. You open the page in Chrome or Edge,
@@ -105,14 +105,15 @@ the page. Your settings and learned names stay in that browser.
 | `{ben_id}` | Beneficiary ID, where the bank prints one |
 | `{ref}` | Bank transaction reference |
 | `{date}` | Transaction date `YYYY-MM-DD` |
+| `{dmy}` | Transaction date as `11Aug26` |
 | `{ymd}` | The same date as `20260811` |
 | `{dir}` | `OUT` or `IN` |
 | `{receiver_bank}` | Beneficiary's bank |
 | `{orig}` | Original file name |
 
-Presets: `standard` = `{bank}_{party}_{currency}{amount}_{inv}`, `with_date`
-(same with the date first — sorts the folder chronologically), `audit` (both
-parties), `ref_based`. A token with no value simply disappears from the name.
+Presets: `standard` = `{bank}_{party}_{currency}{amount}_{inv}_{dmy}`, `date_first`
+(`{ymd}` in front, so the folder sorts chronologically), `audit` (both parties),
+`ref_based`. A token with no value simply disappears from the name.
 
 Bank names are shortened by default (`SaudiNB`, `RiyadB`, `RajhiB`, `JaziraB`,
 `ArabNB`, `BiladB`, `AlinmaB`, `FransiB`, `SAIB`, `SABB`; anything unknown becomes

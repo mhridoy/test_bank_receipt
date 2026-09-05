@@ -559,6 +559,17 @@ export function sanitize(name, maxLen = 150) {
 /** "Wajd Alamani Contracting Establishment" -> "Wajd Alamani".
     Long legal names make unreadable file names; the first words identify a
     supplier just as well. 0 keeps the whole name. */
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "2026-08-11" -> "11Aug26" - readable at a glance and short. */
+export function shortDate(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ""));
+  if (!m) return "";
+  const [, year, month, day] = m;
+  return `${day}${MONTH_NAMES[Number(month) - 1] || ""}${year.slice(2)}`;
+}
+
 export function shortenName(name, words = 2) {
   if (!name || !words) return name || "";
   const parts = String(name).trim().split(/\s+/);
@@ -596,6 +607,7 @@ export function buildName(fields, template, original, stripLegal = true,
     ben_id: fields.beneficiary_id || "",
     date: (fields.transaction_date || "").slice(0, 10),
     ymd: (fields.transaction_date || "").slice(0, 10).replace(/-/g, ""),
+    dmy: shortDate(fields.transaction_date),
     dir: fields.direction === "in" ? "IN" : "OUT",
     orig: original.replace(/\.[^.]*$/, ""),
   };

@@ -13,7 +13,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g,
 const HAS_FS = "showDirectoryPicker" in window;
 
 const DEFAULTS = {
-  template: "{bank}_{party}_{currency}{amount}_{inv}",
+  template: "{bank}_{party}_{currency}{amount}_{inv}_{dmy}",
   recursive: false, stripLegal: true, invFromName: true,
   useOcr: true, autoLearn: true, quality: "auto", ocrLangs: "eng", theme: "system",
   nameWords: 2, shortBankNames: true, trimCents: false,
@@ -82,9 +82,11 @@ $("themeBtn").onclick = () => {
 /* ── name pattern ──────────────────────────────────────────────── */
 
 const SAMPLE = {
-  bank: "RiyadBank", sender: "TabeebArabia", receiver: "PioneerMetalCorners",
-  amount: "200640.50", amount_net: "200632.45", currency: "SAR", invoice: "7260019",
-  ref: "946702450951BNBD", date: "2026-09-02", receiver_bank: "SaudiNationalBank",
+  bank: "RiyadB", sender: "TabeebArabia", receiver: "PioneerMetal", party: "PioneerMetal",
+  amount: "200640.50", amount_net: "200632.45", currency: "SAR",
+  invoice: "7260019", inv: "INV_7260019", ben_id: "7053930587",
+  ref: "946702450951BNBD", date: "2026-09-02", ymd: "20260902", dmy: "02Sep26",
+  dir: "OUT", bank_full: "RiyadBank", receiver_bank: "SaudiNB",
   orig: "RV INV 7260019",
 };
 

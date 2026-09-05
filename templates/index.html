@@ -148,7 +148,7 @@
         </label>
       </div>
       <div class="tokens">
-        {% for t in ['bank','party','receiver','sender','currency','amount','amount_net','inv','invoice','ref','ben_id','date','ymd','dir','bank_full','receiver_bank','orig'] %}
+        {% for t in ['bank','party','receiver','sender','currency','amount','amount_net','inv','invoice','ref','ben_id','dmy','date','ymd','dir','bank_full','receiver_bank','orig'] %}
         <button class="token mono" data-token="{{ '{' ~ t ~ '}' }}">{{ '{' ~ t ~ '}' }}</button>
         {% endfor %}
       </div>
